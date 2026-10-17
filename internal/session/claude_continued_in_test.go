@@ -216,3 +216,113 @@ func TestBuildEnvSourceCommand_UnsetsClaudeJobDir(t *testing.T) {
 		t.Errorf("a plain shell pane must be left alone, got %q", got)
 	}
 }
+
+// CodeQL go/path-injection on #2683: ids used as transcript file names must be
+// bare UUIDs.
+func TestValidClaudeSessionIDForPath_RejectsTraversal(t *testing.T) {
+	for _, id := range []string{
+		"",
+		"../11111111-1111-4111-8111-111111111111",
+		"/tmp/11111111-1111-4111-8111-111111111111",
+		"11111111-1111-4111-8111-111111111111/../x",
+		`..\11111111-1111-4111-8111-111111111111`,
+		"..",
+	} {
+		if validClaudeSessionIDForPath(id) {
+			t.Errorf("id %q must be refused", id)
+		}
+	}
+	if !validClaudeSessionIDForPath("11111111-1111-4111-8111-111111111111") {
+		t.Error("a bare UUID must be accepted")
+	}
+}
+
+// A continued-in chain is only walked inside the Claude projects directory:
+// a project directory symlinked to somewhere outside it is not read.
+func TestFollowClaudeContinuedIn_RefusesSymlinkedProjectDirOutsideRoot(t *testing.T) {
+	projectPath, dir := setupContinuedInProject(t)
+	const (
+		oldID = "12121212-1212-4121-8121-121212121212"
+		newID = "34343434-3434-4343-8343-343434343434"
+	)
+	outside := t.TempDir()
+	writeContinuedInTranscript(t, outside, oldID, newID)
+	writeContinuedInTranscript(t, outside, newID, "")
+	if err := os.Remove(dir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, dir); err != nil {
+		t.Fatal(err)
+	}
+
+	inst := NewInstance("handoff-symlink-dir", projectPath)
+	inst.Tool = "claude"
+	inst.ClaudeSessionID = oldID
+	inst.followClaudeContinuedIn()
+	if inst.ClaudeSessionID != oldID {
+		t.Fatalf("a project dir linking outside the projects root must not be followed, got %q", inst.ClaudeSessionID)
+	}
+}
+
+// A successor transcript that is a symlink out of the project directory is
+// refused too.
+func TestFollowClaudeContinuedIn_RefusesSymlinkedSuccessorOutsideRoot(t *testing.T) {
+	projectPath, dir := setupContinuedInProject(t)
+	const (
+		oldID = "56565656-5656-4565-8565-565656565656"
+		newID = "78787878-7878-4787-8787-787878787878"
+	)
+	outside := t.TempDir()
+	writeContinuedInTranscript(t, dir, oldID, newID)
+	writeContinuedInTranscript(t, outside, newID, "")
+	if err := os.Symlink(filepath.Join(outside, newID+".jsonl"), filepath.Join(dir, newID+".jsonl")); err != nil {
+		t.Fatal(err)
+	}
+
+	inst := NewInstance("handoff-symlink-file", projectPath)
+	inst.Tool = "claude"
+	inst.ClaudeSessionID = oldID
+	inst.followClaudeContinuedIn()
+	if inst.ClaudeSessionID != oldID {
+		t.Fatalf("a successor linking outside the projects root must not be followed, got %q", inst.ClaudeSessionID)
+	}
+}
+
+// followClaudeContinuedIn runs from buildClaudeResumeCommand without i.mu
+// while UpdateStatus reads claudeSupersededIDs and ClaudeSessionID under it.
+// Run with -race: the rebind must take the lock.
+func TestFollowClaudeContinuedIn_ConcurrentWithStatusUpdate(t *testing.T) {
+	projectPath, dir := setupContinuedInProject(t)
+	const (
+		oldID = "9a9a9a9a-9a9a-49a9-89a9-9a9a9a9a9a9a"
+		newID = "b0b0b0b0-b0b0-4b0b-8b0b-b0b0b0b0b0b0"
+	)
+	writeContinuedInTranscript(t, dir, oldID, newID)
+	writeContinuedInTranscript(t, dir, newID, "")
+
+	for n := 0; n < 20; n++ {
+		inst := NewInstance("handoff-race", projectPath)
+		inst.Tool = "claude"
+		inst.ClaudeSessionID = oldID
+		inst.hookSessionID = oldID
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			for k := 0; k < 20; k++ {
+				_ = inst.UpdateStatus()
+				inst.mu.Lock()
+				inst.applyHookSessionIDLocked()
+				_ = inst.claudeIDSuperseded(oldID)
+				inst.mu.Unlock()
+			}
+		}()
+		inst.followClaudeContinuedIn()
+		<-done
+		inst.mu.RLock()
+		got := inst.ClaudeSessionID
+		inst.mu.RUnlock()
+		if got != newID {
+			t.Fatalf("iteration %d: ClaudeSessionID = %q, want %q", n, got, newID)
+		}
+	}
+}

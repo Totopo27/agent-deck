@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/logging"
@@ -40,22 +41,35 @@ func (i *Instance) followClaudeContinuedIn() {
 	if i == nil || !i.TranscriptIsResolvableLocally() {
 		return
 	}
+	i.mu.RLock()
 	start := i.ClaudeSessionID
-	if !i.resumeIdentityAllowed(start).Allow {
+	i.mu.RUnlock()
+	if !validClaudeSessionIDForPath(start) || !i.resumeIdentityAllowed(start).Allow {
 		return
 	}
-	path := claudeTranscriptPathIn(GetClaudeConfigDirForInstance(i), i, start)
-	if path == "" {
+	configDir := GetClaudeConfigDirForInstance(i)
+	root := claudeProjectsRoot(configDir)
+	if root == "" {
 		return
 	}
+	path, ok := confineClaudeTranscriptPath(root, claudeTranscriptPathIn(configDir, i, start))
+	if !ok {
+		return
+	}
+	dir := filepath.Dir(path)
 	cur := start
 	seen := map[string]bool{cur: true}
 	for hop := 0; hop < maxContinuedInHops; hop++ {
-		next := continuedInSuccessor(path)
-		if next == "" || seen[next] {
+		next := continuedInSuccessor(root, path)
+		if next == "" || seen[next] || !validClaudeSessionIDForPath(next) {
 			break
 		}
-		nextPath := filepath.Join(filepath.Dir(path), next+".jsonl")
+		nextPath, ok := confineClaudeTranscriptPath(root, filepath.Join(dir, next+".jsonl"))
+		// The successor must sit in the same project directory, also after
+		// symlinks are resolved.
+		if !ok || filepath.Dir(nextPath) != dir {
+			break
+		}
 		if info, err := os.Stat(nextPath); err != nil || !info.Mode().IsRegular() {
 			break
 		}
@@ -63,6 +77,16 @@ func (i *Instance) followClaudeContinuedIn() {
 		cur, path = next, nextPath
 	}
 	if cur == start {
+		return
+	}
+
+	// buildClaudeResumeCommand runs without i.mu, while UpdateStatus reads
+	// claudeSupersededIDs and ClaudeSessionID under it: take the lock for the
+	// rebind itself. The tmux and SQLite writes below stay outside it.
+	i.mu.Lock()
+	if i.ClaudeSessionID != start {
+		// Something else rebound the session while the chain was walked.
+		i.mu.Unlock()
 		return
 	}
 	if i.claudeSupersededIDs == nil {
@@ -77,7 +101,10 @@ func (i *Instance) followClaudeContinuedIn() {
 	i.ClaudeSessionID = cur
 	i.markClaudeSessionIDVerified()
 	i.ClaudeDetectedAt = time.Now()
-	i.publishClaudeContinuedInRebind(cur)
+	detectedAt := i.ClaudeDetectedAt
+	i.mu.Unlock()
+
+	i.publishClaudeContinuedInRebind(cur, detectedAt)
 	_ = WriteSessionIDLifecycleEvent(SessionIDLifecycleEvent{
 		InstanceID: i.ID,
 		Tool:       "claude",
@@ -91,6 +118,47 @@ func (i *Instance) followClaudeContinuedIn() {
 		slog.String("instance_id", logging.SanitizeValue(i.ID)),
 		slog.String("old_session_id", logging.SanitizeValue(start)),
 		slog.String("claude_session_id", logging.SanitizeValue(cur)))
+}
+
+// validClaudeSessionIDForPath reports whether id is a bare Claude session
+// UUID that is safe to use as a transcript file name: no separators, no "..".
+func validClaudeSessionIDForPath(id string) bool {
+	return claudeSessionIDRE.MatchString(id) &&
+		filepath.Base(id) == id &&
+		!strings.ContainsAny(id, `/\`) &&
+		!strings.Contains(id, "..")
+}
+
+// claudeProjectsRoot returns the resolved <configDir>/projects directory, or
+// "" when it does not exist.
+func claudeProjectsRoot(configDir string) string {
+	if configDir == "" {
+		return ""
+	}
+	root, err := filepath.EvalSymlinks(filepath.Join(configDir, "projects"))
+	if err != nil {
+		return ""
+	}
+	return filepath.Clean(root)
+}
+
+// confineClaudeTranscriptPath resolves p (symlinks included) and returns it
+// only when it stays strictly under root, the resolved Claude projects
+// directory. A transcript or project directory that links outside the root
+// is refused.
+func confineClaudeTranscriptPath(root, p string) (string, bool) {
+	if root == "" || p == "" || !filepath.IsAbs(p) {
+		return "", false
+	}
+	resolved, err := filepath.EvalSymlinks(filepath.Clean(p))
+	if err != nil {
+		return "", false
+	}
+	resolved = filepath.Clean(resolved)
+	if strings.Contains(resolved, "..") || !strings.HasPrefix(resolved, root+string(filepath.Separator)) {
+		return "", false
+	}
+	return resolved, true
 }
 
 // claudeIDSuperseded reports whether id is a predecessor this instance already
@@ -112,7 +180,7 @@ func (i *Instance) claudeIDSuperseded(id string) bool {
 // it back and reverts ClaudeSessionID to the stalled predecessor. The SQLite
 // write keeps a fresh load (another process, the next CLI call, a reboot)
 // from resurrecting the old id too.
-func (i *Instance) publishClaudeContinuedInRebind(sessionID string) {
+func (i *Instance) publishClaudeContinuedInRebind(sessionID string, detectedAt time.Time) {
 	if i.tmuxSession != nil && i.tmuxSession.Exists() {
 		_ = i.tmuxSession.SetEnvironment("CLAUDE_SESSION_ID", sessionID)
 	}
@@ -120,19 +188,25 @@ func (i *Instance) publishClaudeContinuedInRebind(sessionID string) {
 	if db == nil {
 		return
 	}
-	if err := db.WriteClaudeSessionBinding(i.ID, sessionID, i.ClaudeDetectedAt); err != nil {
+	if err := db.WriteClaudeSessionBinding(i.ID, sessionID, detectedAt); err != nil {
 		sessionLog.Warn("claude_continued_in_persist_failed",
 			slog.String("instance_id", logging.SanitizeValue(i.ID)),
 			slog.String("new_id", logging.SanitizeValue(sessionID)),
 			slog.String("error", logging.SanitizeValue(err.Error())))
 		return
 	}
+	i.mu.Lock()
 	i.linkedClaudeSessionID = sessionID
+	i.mu.Unlock()
 }
 
 // continuedInSuccessor returns the continuedInSessionId of the transcript's
 // LAST record when that record is a continued-in handoff, else "".
-func continuedInSuccessor(path string) string {
+func continuedInSuccessor(root, path string) string {
+	path = filepath.Clean(path)
+	if root == "" || strings.Contains(path, "..") || !strings.HasPrefix(path, root+string(filepath.Separator)) {
+		return ""
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return ""
