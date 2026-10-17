@@ -823,6 +823,18 @@ func ResolveSession(identifier string, instances []*session.Instance) (*session.
 			identifier, strings.Join(names, "\n  - ")), ErrCodeAmbiguous
 	}
 
+	// "conductor-<name>" with no exact title or ID match addresses the
+	// conductor by identity (stored name, else a decorated title). Out-of-
+	// process callers — the generated heartbeat script, conductor bridge.py,
+	// user scripts — address a conductor by its canonical title, which stops
+	// matching once the title is decorated (the voice daemon's "🎙 ") or the
+	// conductor is renamed.
+	if name, ok := strings.CutPrefix(identifier, session.ConductorSessionTitlePrefix); ok && name != "" {
+		if inst := session.FindConductorInstance(instances, name); inst != nil {
+			return inst, "", ""
+		}
+	}
+
 	// Try location match - collect all sessions that RUN at this location.
 	// Location, not ProjectPath: an --ssh session stores a local placeholder in
 	// ProjectPath, so the remote path it really runs at was unaddressable while

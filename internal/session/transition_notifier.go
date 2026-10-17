@@ -336,9 +336,18 @@ func isTerminalAttentionStatus(status string) bool {
 }
 
 // isConductorSession reports whether inst is a conductor by its resolved
-// identity (stored name, else a possibly decorated conductor-* title).
+// identity (stored name, else a possibly decorated conductor-* title), or by
+// the historical case-insensitive conductor-* title check this predicate has
+// always applied (legacyConductorNameFold), so "Conductor-Ops" keeps counting.
 func isConductorSession(inst *Instance) bool {
-	return inst.ResolveConductorName() != ""
+	if inst.ResolveConductorName() != "" {
+		return true
+	}
+	if inst == nil {
+		return false
+	}
+	_, ok := legacyConductorNameFold(inst.Title)
+	return ok
 }
 
 // isSelfSuppressedConductor reports whether inst is a top-level conductor: no

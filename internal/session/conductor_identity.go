@@ -30,20 +30,43 @@ const toolDataConductorNameKey = "conductor_name"
 var conductorTitleDriftWarned sync.Map
 
 // ConductorNameFromTitle parses a conductor name out of a session title of the
-// form "conductor-<name>". Leading decoration (emoji, variation selectors,
-// whitespace, symbols such as "* " or "[x] ") is skipped and the prefix is
-// matched case-insensitively. Returns "" when the title is not a conductor
-// title. This is only the fallback for records without a stored name; prefer
-// Instance.ResolveConductorName.
+// form "conductor-<name>". Leading decoration is skipped (see
+// isConductorTitleDecoration: whitespace and emoji, such as the voice
+// daemon's "🎙 "); the "conductor-" prefix itself is case-sensitive. Returns ""
+// when the title is not a conductor title. This is only the fallback for
+// records without a stored name; prefer Instance.ResolveConductorName.
+//
+// The decoration set is deliberately narrow: a title that parses here also
+// keeps the conductor's TELEGRAM_* env (telegramStateDirStripExpr), so
+// "Conductor-review" or "* conductor-notes" must stay ordinary sessions.
 func ConductorNameFromTitle(title string) string {
-	t := strings.TrimLeftFunc(title, func(r rune) bool {
-		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
-	})
-	if len(t) < len(ConductorSessionTitlePrefix) ||
-		!strings.EqualFold(t[:len(ConductorSessionTitlePrefix)], ConductorSessionTitlePrefix) {
+	t := strings.TrimLeftFunc(title, isConductorTitleDecoration)
+	name, ok := strings.CutPrefix(t, ConductorSessionTitlePrefix)
+	if !ok {
 		return ""
 	}
-	return strings.TrimRightFunc(t[len(ConductorSessionTitlePrefix):], unicode.IsSpace)
+	return strings.TrimRightFunc(name, unicode.IsSpace)
+}
+
+// isConductorTitleDecoration reports whether r may precede "conductor-" in a
+// decorated conductor title: whitespace, emoji and other symbols (unicode So,
+// Sk, which covers skin-tone modifiers), the emoji variation selectors and
+// the zero-width joiner that glue multi-codepoint emoji together.
+func isConductorTitleDecoration(r rune) bool {
+	switch r {
+	case '\uFE0E', '\uFE0F', '\u200D':
+		return true
+	}
+	return unicode.IsSpace(r) || unicode.Is(unicode.So, r) || unicode.Is(unicode.Sk, r)
+}
+
+// legacyConductorNameFold is the pre-identity title parse kept for the two
+// call sites that historically matched case-insensitively (the transition
+// notifier's conductor check and the [conductors.<name>.inbox] lookup):
+// trim surrounding whitespace, lowercase, cut "conductor-". ok reports a
+// prefix match even when the name is empty, as those sites did.
+func legacyConductorNameFold(title string) (name string, ok bool) {
+	return strings.CutPrefix(strings.ToLower(strings.TrimSpace(title)), ConductorSessionTitlePrefix)
 }
 
 // storedConductorName reads the persisted stable name under its lock (the
@@ -58,28 +81,54 @@ func (i *Instance) storedConductorName() string {
 // non-conductor session. Order:
 //
 //  1. the stored ConductorName (stable across renames and decoration);
-//  2. the title fallback (ConductorNameFromTitle) for old records. When the
-//     session is flagged IsConductor and a meta.json exists for the parsed
-//     name, the name is adopted as the stable key in memory; the next save
-//     persists it.
+//  2. the title fallback (ConductorNameFromTitle) for old records. When a
+//     meta.json exists for the parsed name and the session is either flagged
+//     IsConductor or carries exactly the canonical "conductor-<name>" title
+//     (a legacy row written before the flag existed), the name is adopted as
+//     the stable key in memory; the next save persists it. A decorated title
+//     on an unflagged session still resolves (env, settings) but is never
+//     adopted.
 //
 // A stored name whose title no longer parses to it is logged once.
+//
+// It reads Title without i.mu on purpose: it is reachable from inside i.mu
+// critical sections (UpdateHookStatus -> sessionHasConversationData ->
+// GetClaudeConfigDirForInstance), and sync.RWMutex is not reentrant, so
+// taking the read lock here would deadlock the hook path. Callers on another
+// goroutine than the title writers, not holding i.mu, use
+// ResolveConductorNameThreadSafe.
 func (i *Instance) ResolveConductorName() string {
 	if i == nil {
 		return ""
 	}
+	return i.resolveConductorName(i.Title)
+}
+
+// ResolveConductorNameThreadSafe is ResolveConductorName with the title read
+// under its lock (GetTitleThreadSafe), for status pollers, the web snapshot
+// and the TUI, which race title syncs (SetTitleThreadSafe). Never call it
+// while holding i.mu.
+func (i *Instance) ResolveConductorNameThreadSafe() string {
+	if i == nil {
+		return ""
+	}
+	return i.resolveConductorName(i.GetTitleThreadSafe())
+}
+
+func (i *Instance) resolveConductorName(title string) string {
 	if name := i.storedConductorName(); name != "" {
-		i.warnConductorTitleDrift(name)
+		i.warnConductorTitleDrift(name, title)
 		return name
 	}
-	name := ConductorNameFromTitle(i.Title)
+	name := ConductorNameFromTitle(title)
 	if name == "" {
 		return ""
 	}
-	// Adopt only a confirmed conductor: the IsConductor flag guards against a
-	// worker that merely carries a conductor-shaped title, and the meta.json
-	// check against persisting a guess for a conductor that was never set up.
-	if i.IsConductor && IsConductorSetup(name) {
+	// Adopt only a confirmed conductor: the IsConductor flag (or the exact
+	// canonical title of a legacy row) guards against a worker that merely
+	// carries a decorated conductor-shaped title, and the meta.json check
+	// against persisting a guess for a conductor that was never set up.
+	if (i.IsConductor || title == ConductorSessionTitle(name)) && IsConductorSetup(name) {
 		i.conductorNameMu.Lock()
 		if i.ConductorName == "" {
 			i.ConductorName = name
@@ -94,15 +143,19 @@ func (i *Instance) ResolveConductorName() string {
 // "conductor-<name>"). A decorated title for the same name is not drift.
 // Used by `conductor status` to surface the mismatch.
 func (i *Instance) ConductorTitleDrift() (name string, drifted bool) {
-	name = i.ResolveConductorName()
+	if i == nil {
+		return "", false
+	}
+	title := i.GetTitleThreadSafe()
+	name = i.resolveConductorName(title)
 	if name == "" {
 		return "", false
 	}
-	return name, ConductorNameFromTitle(i.Title) != name
+	return name, ConductorNameFromTitle(title) != name
 }
 
-func (i *Instance) warnConductorTitleDrift(name string) {
-	if ConductorNameFromTitle(i.Title) == name {
+func (i *Instance) warnConductorTitleDrift(name, title string) {
+	if ConductorNameFromTitle(title) == name {
 		return
 	}
 	if _, loaded := conductorTitleDriftWarned.LoadOrStore(i.ID, struct{}{}); loaded {
@@ -110,7 +163,7 @@ func (i *Instance) warnConductorTitleDrift(name string) {
 	}
 	sessionLog.Warn("conductor_title_drift",
 		slog.String("session_id", i.ID),
-		slog.String("title", i.Title),
+		slog.String("title", title),
 		slog.String("conductor", name),
 		slog.String("detail", "title no longer matches the conductor name; settings still resolve by the stored name"))
 }
@@ -134,10 +187,11 @@ func FindConductorInstance(instances []*Instance, name string) *Instance {
 		if inst == nil || inst.storedConductorName() != "" {
 			continue
 		}
-		if inst.Title == title {
+		instTitle := inst.GetTitleThreadSafe()
+		if instTitle == title {
 			return inst
 		}
-		if decorated == nil && ConductorNameFromTitle(inst.Title) == name {
+		if decorated == nil && ConductorNameFromTitle(instTitle) == name {
 			decorated = inst
 		}
 	}

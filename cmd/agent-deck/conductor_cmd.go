@@ -890,6 +890,7 @@ func handleConductorTeardown(_ string, args []string) {
 			instances, _, err := storage.LoadWithGroups()
 			if err == nil {
 				if inst := session.FindConductorInstance(instances, meta.Name); inst != nil {
+					sessionTitle = inst.Title
 					if inst.Exists() {
 						_ = inst.Kill()
 					}
@@ -922,14 +923,16 @@ func handleConductorTeardown(_ string, args []string) {
 			if storage != nil {
 				instances, groups, err := storage.LoadWithGroups()
 				if err == nil {
+					removedIDs := conductorRowIDsToRemove(instances, meta.Name)
+					remove := make(map[string]bool, len(removedIDs))
+					for _, id := range removedIDs {
+						remove[id] = true
+					}
 					var filtered []*session.Instance
-					var removedIDs []string
 					for _, inst := range instances {
-						if inst.Title == sessionTitle {
-							removedIDs = append(removedIDs, inst.ID)
-							continue
+						if !remove[inst.ID] {
+							filtered = append(filtered, inst)
 						}
-						filtered = append(filtered, inst)
 					}
 					if len(removedIDs) > 0 {
 						groupTree := session.NewGroupTreeWithGroups(filtered, groups)
@@ -988,6 +991,31 @@ func handleConductorTeardown(_ string, args []string) {
 			fmt.Printf("  agent-deck conductor teardown %s --remove\n", name)
 		}
 	}
+}
+
+// conductorRowIDsToRemove returns the state.db rows `conductor teardown
+// --remove` deletes for the named conductor: the session found by identity
+// (session.FindConductorInstance — the same one teardown stopped, even when
+// renamed or decorated) plus any other row still titled exactly
+// conductor-<name> that is not stamped as a different conductor (the
+// historical behavior, which also swept up duplicates).
+func conductorRowIDsToRemove(instances []*session.Instance, name string) []string {
+	var ids []string
+	found := session.FindConductorInstance(instances, name)
+	if found != nil {
+		ids = append(ids, found.ID)
+	}
+	title := session.ConductorSessionTitle(name)
+	for _, inst := range instances {
+		if inst == nil || inst == found || inst.Title != title {
+			continue
+		}
+		if stored := inst.ConductorName; stored != "" && stored != name {
+			continue
+		}
+		ids = append(ids, inst.ID)
+	}
+	return ids
 }
 
 // handleConductorStatus shows conductor health

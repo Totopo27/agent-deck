@@ -576,18 +576,14 @@ func GetConductorLastActivity(name, profile string) (time.Time, error) {
 		return time.Time{}, fmt.Errorf("load instances: %w", err)
 	}
 
-	// Find the conductor's session ID.
-	conductorTitle := ConductorSessionTitle(name)
-	var conductorID string
-	for _, inst := range instances {
-		if inst.Title == conductorTitle {
-			conductorID = inst.ID
-			break
-		}
+	// Find the conductor's session ID by identity (stored name, canonical or
+	// decorated title), not the exact title: a renamed or decorated conductor
+	// must not lose its idle gate.
+	conductorInst := FindConductorInstance(instances, name)
+	if conductorInst == nil {
+		return time.Time{}, fmt.Errorf("conductor session %q not found in storage", ConductorSessionTitle(name))
 	}
-	if conductorID == "" {
-		return time.Time{}, fmt.Errorf("conductor session %q not found in storage", conductorTitle)
-	}
+	conductorID := conductorInst.ID
 
 	// Build a parent→children index for a single BFS pass.
 	children := make(map[string][]*Instance, len(instances))

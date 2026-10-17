@@ -855,8 +855,8 @@ func (d *ForkDialog) focusedRow(rows []string, optionsRow int) int {
 // across a decorated or renamed title), falling back to the title for a
 // session that does not resolve to a conductor.
 func conductorDisplayName(inst *session.Instance) string {
-	if name := inst.ResolveConductorName(); name != "" {
+	if name := inst.ResolveConductorNameThreadSafe(); name != "" {
 		return name
 	}
-	return inst.Title
+	return inst.GetTitleThreadSafe()
 }

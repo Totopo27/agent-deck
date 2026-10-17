@@ -1,10 +1,13 @@
 package session
 
 import (
+	"bytes"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // setupConductorIdentityFixture isolates HOME, writes a config.toml with a
@@ -81,7 +84,7 @@ func assertConductorSettingsKept(t *testing.T, inst *Instance, tmpHome string) {
 // title on an old record (no stable conductor name stored) still resolves to
 // the conductor through the tolerant title fallback.
 func TestConductorIdentity_DecoratedTitleKeepsSettings(t *testing.T) {
-	for _, title := range []string{"🎙 conductor-personal", "🎙️conductor-personal", "* conductor-personal", "  conductor-personal"} {
+	for _, title := range []string{"🎙 conductor-personal", "🎙️conductor-personal", "👩\u200d💻 conductor-personal", "  conductor-personal"} {
 		t.Run(title, func(t *testing.T) {
 			tmpHome := setupConductorIdentityFixture(t)
 			inst := &Instance{ID: "decorated-" + title, Title: title, Tool: "claude", ProjectPath: tmpHome}
@@ -114,15 +117,26 @@ func TestConductorIdentity_OldRecordResolvesViaTitle(t *testing.T) {
 		t.Fatalf("stable name filled without a matching meta.json: %q", stray.ConductorName)
 	}
 
-	// A conductor-titled session not flagged as a conductor (a worker someone
-	// named "conductor-personal") resolves for legacy compatibility but never
-	// adopts the identity.
-	worker := &Instance{ID: "worker", Title: "conductor-personal", Tool: "claude"}
+	// A legacy conductor row written before the IsConductor flag existed:
+	// exactly the canonical title plus a matching meta.json is adopted, so a
+	// later rename keeps its settings.
+	legacy := &Instance{ID: "legacy-unflagged", Title: "conductor-personal", Tool: "claude"}
+	if got := legacy.ResolveConductorName(); got != "personal" {
+		t.Fatalf("ResolveConductorName(legacy) = %q, want personal", got)
+	}
+	if legacy.ConductorName != "personal" {
+		t.Fatalf("legacy unflagged conductor row not adopted: %q", legacy.ConductorName)
+	}
+
+	// A decorated title on an unflagged session resolves (env, settings) but
+	// is never persisted as an identity: only the exact title or the flag
+	// confirm a conductor.
+	worker := &Instance{ID: "worker", Title: "🎙 conductor-personal", Tool: "claude"}
 	if got := worker.ResolveConductorName(); got != "personal" {
 		t.Fatalf("ResolveConductorName(worker) = %q, want personal", got)
 	}
 	if worker.ConductorName != "" {
-		t.Fatalf("unflagged session adopted a conductor identity: %q", worker.ConductorName)
+		t.Fatalf("unflagged decorated session adopted a conductor identity: %q", worker.ConductorName)
 	}
 }
 
@@ -146,17 +160,21 @@ func TestConductorIdentity_RenamedConductorKeepsSettings(t *testing.T) {
 }
 
 func TestConductorIdentity_NonConductorTitles(t *testing.T) {
-	for _, title := range []string{"", "main", "conductor-", "my conductor-x", "xconductor-foo", "🎙 conductor-"} {
+	// Only whitespace and emoji count as decoration and the prefix is
+	// case-sensitive: these stay ordinary sessions (and keep the TELEGRAM_*
+	// strip a non-conductor gets).
+	for _, title := range []string{"", "main", "conductor-", "my conductor-x", "xconductor-foo", "🎙 conductor-",
+		"* conductor-x", "[*] conductor-ops-two", "Conductor-ops", "Conductor-review", "* conductor-notes", "CONDUCTOR-x"} {
 		if got := ConductorNameFromTitle(title); got != "" {
 			t.Errorf("ConductorNameFromTitle(%q) = %q, want empty", title, got)
 		}
 	}
 	for title, want := range map[string]string{
-		"conductor-personal":    "personal",
-		"🎙 conductor-personal":  "personal",
-		"Conductor-ops":         "ops",
-		"conductor-a.b_c-d":     "a.b_c-d",
-		"[*] conductor-ops-two": "ops-two",
+		"conductor-personal":       "personal",
+		"🎙 conductor-personal":     "personal",
+		"conductor-a.b_c-d":        "a.b_c-d",
+		"👩\u200d💻 conductor-ops":   "ops",
+		"\u2b50\ufe0f conductor-x": "x",
 	} {
 		if got := ConductorNameFromTitle(title); got != want {
 			t.Errorf("ConductorNameFromTitle(%q) = %q, want %q", title, got, want)
@@ -255,5 +273,232 @@ func TestConductorIdentity_InboxConfigFollowsConductor(t *testing.T) {
 	}
 	if got := ResolveInboxConfigForInstance(nil).MaxTextBytes; got != 0 {
 		t.Errorf("ResolveInboxConfigForInstance(nil).MaxTextBytes = %d, want 0", got)
+	}
+}
+
+// TestConductorIdentity_TelegramStripNotWidened: a title that only looks
+// conductor-ish (wrong case, a leading "*" bullet) is an ordinary session and
+// keeps the TELEGRAM_* strip; the decoration fallback must not hand it the
+// bot owner's exemption.
+func TestConductorIdentity_TelegramStripNotWidened(t *testing.T) {
+	setupConductorIdentityFixture(t)
+	for _, title := range []string{"Conductor-review", "* conductor-notes", "Conductor-personal", "[x] conductor-personal"} {
+		inst := &Instance{ID: "strip-" + title, Title: title, Tool: "claude"}
+		if got := telegramStateDirStripExpr(inst); got == "" {
+			t.Errorf("telegramStateDirStripExpr(%q) = \"\", want the TELEGRAM_* strip for a non-conductor", title)
+		}
+	}
+	conductor := &Instance{ID: "strip-conductor", Title: "🎙 conductor-personal", Tool: "claude"}
+	if got := telegramStateDirStripExpr(conductor); got != "" {
+		t.Errorf("telegramStateDirStripExpr(decorated conductor) = %q, want no strip", got)
+	}
+}
+
+// TestConductorIdentity_CaseInsensitiveCallSitesPreserved: the two call sites
+// that matched conductor titles case-insensitively before the stable key
+// (transition notifier conductor check, [conductors.<name>.inbox] lookup)
+// keep doing so even though the generic resolver is now case-sensitive.
+func TestConductorIdentity_CaseInsensitiveCallSitesPreserved(t *testing.T) {
+	setupConductorIdentityFixture(t)
+	cfgPath, err := GetUserConfigPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfgPath, []byte("[conductors.personal.inbox]\nmax_text_bytes = 1234\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ClearUserConfigCache()
+
+	for _, title := range []string{"Conductor-Ops", "  CONDUCTOR-personal ", "conductor-"} {
+		if !isConductorSession(&Instance{ID: "ci-" + title, Title: title}) {
+			t.Errorf("isConductorSession(%q) = false, want true (historical case-insensitive match)", title)
+		}
+	}
+	if isConductorSession(&Instance{ID: "ci-plain", Title: "my worker"}) {
+		t.Error("isConductorSession(my worker) = true")
+	}
+	if got := ResolveInboxConfig("Conductor-Personal").MaxTextBytes; got != 1234 {
+		t.Errorf("ResolveInboxConfig(Conductor-Personal).MaxTextBytes = %d, want 1234", got)
+	}
+	upper := &Instance{ID: "ci-inbox", Title: "CONDUCTOR-personal"}
+	if got := ResolveInboxConfigForInstance(upper).MaxTextBytes; got != 1234 {
+		t.Errorf("ResolveInboxConfigForInstance(CONDUCTOR-personal).MaxTextBytes = %d, want 1234", got)
+	}
+}
+
+// TestConductorIdentity_ResolveRacesTitleWrites: status pollers, the web
+// snapshot and the TUI resolve the conductor while a title sync rewrites the
+// title on another goroutine (SetTitleThreadSafe), so those entry points must
+// read the title under its lock. Run with -race.
+func TestConductorIdentity_ResolveRacesTitleWrites(t *testing.T) {
+	setupConductorIdentityFixture(t)
+	stored := &Instance{ID: "race-stored", Title: "conductor-personal", ConductorName: "personal"}
+	legacy := &Instance{ID: "race-legacy", Title: "conductor-personal", IsConductor: true}
+	all := []*Instance{stored, legacy}
+	t.Cleanup(func() { conductorTitleDriftWarned.Delete(stored.ID) })
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for n := 0; n < 200; n++ {
+			title := "conductor-personal"
+			if n%2 == 0 {
+				title = "renamed by sync"
+			}
+			stored.SetTitleThreadSafe(title)
+			legacy.SetTitleThreadSafe(title)
+		}
+	}()
+	for n := 0; n < 200; n++ {
+		_ = stored.ResolveConductorNameThreadSafe()
+		_, _ = stored.ConductorTitleDrift()
+		_ = legacy.ResolveConductorNameThreadSafe()
+		_ = FindConductorInstance(all, "personal")
+	}
+	<-done
+}
+
+// TestConductorIdentity_ResolveUnderInstanceLock: ResolveConductorName is
+// reached with i.mu already held (UpdateHookStatus ->
+// sessionHasConversationData -> GetClaudeConfigDirForInstance). RWMutex is
+// not reentrant, so the resolver must not take i.mu or the hook path
+// deadlocks.
+func TestConductorIdentity_ResolveUnderInstanceLock(t *testing.T) {
+	tmpHome := setupConductorIdentityFixture(t)
+	inst := &Instance{ID: "under-lock", Title: "🎙 conductor-personal", Tool: "claude", ProjectPath: tmpHome}
+
+	inst.mu.Lock()
+	done := make(chan string, 1)
+	go func() { done <- GetClaudeConfigDirForInstance(inst) }()
+	select {
+	case got := <-done:
+		inst.mu.Unlock()
+		if want := filepath.Join(tmpHome, ".claude-personal"); got != want {
+			t.Fatalf("GetClaudeConfigDirForInstance under i.mu = %q, want %q", got, want)
+		}
+	case <-time.After(5 * time.Second):
+		inst.mu.Unlock()
+		<-done
+		t.Fatal("conductor resolution blocked on i.mu held by the caller (hook path deadlock)")
+	}
+}
+
+// TestConductorIdentity_DriftWarnedOnce: a renamed conductor resolved on every
+// status tick logs conductor_title_drift once per process, not per call.
+func TestConductorIdentity_DriftWarnedOnce(t *testing.T) {
+	var buf bytes.Buffer
+	origLog := sessionLog
+	sessionLog = slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	t.Cleanup(func() { sessionLog = origLog })
+
+	inst := &Instance{ID: "drift-once-" + t.Name(), Title: "my assistant", ConductorName: "personal"}
+	t.Cleanup(func() { conductorTitleDriftWarned.Delete(inst.ID) })
+	for n := 0; n < 5; n++ {
+		if got := inst.ResolveConductorName(); got != "personal" {
+			t.Fatalf("ResolveConductorName = %q, want personal", got)
+		}
+	}
+	if got := strings.Count(buf.String(), `"conductor_title_drift"`); got != 1 {
+		t.Fatalf("conductor_title_drift logged %d times, want 1; log:\n%s", got, buf.String())
+	}
+	if !strings.Contains(buf.String(), `"title":"my assistant"`) {
+		t.Errorf("drift warning missing the current title; log:\n%s", buf.String())
+	}
+
+	// A decorated title for the same name is not drift and logs nothing.
+	buf.Reset()
+	decorated := &Instance{ID: "drift-none-" + t.Name(), Title: "🎙 conductor-personal", ConductorName: "personal"}
+	t.Cleanup(func() { conductorTitleDriftWarned.Delete(decorated.ID) })
+	_ = decorated.ResolveConductorName()
+	if strings.Contains(buf.String(), "conductor_title_drift") {
+		t.Errorf("decorated title for the stored name logged drift:\n%s", buf.String())
+	}
+}
+
+// TestConductorIdentity_LazyFillSurvivesSaveLoad: a legacy row (no stored
+// name) lazily adopts its name on resolve; the next real save persists it, so
+// after a rename and another save/load cycle the conductor still resolves.
+// Covers both the flagged row and a pre-flag row with the canonical title.
+func TestConductorIdentity_LazyFillSurvivesSaveLoad(t *testing.T) {
+	for _, flagged := range []bool{true, false} {
+		t.Run(map[bool]string{true: "is_conductor", false: "legacy_unflagged"}[flagged], func(t *testing.T) {
+			setupConductorIdentityFixture(t)
+			storage := newTestStorage(t)
+
+			row := NewInstance("conductor-personal", "/tmp")
+			row.Tool = "shell"
+			row.IsConductor = flagged
+			all := []*Instance{row}
+			if err := storage.SaveWithGroups(all, NewGroupTreeWithGroups(all, nil)); err != nil {
+				t.Fatalf("SaveWithGroups (legacy): %v", err)
+			}
+
+			load := func() []*Instance {
+				t.Helper()
+				loaded, _, err := storage.LoadWithGroups()
+				if err != nil {
+					t.Fatalf("LoadWithGroups: %v", err)
+				}
+				return loaded
+			}
+			loaded := load()
+			got := FindConductorInstance(loaded, "personal")
+			if got == nil || got.ConductorName != "" {
+				t.Fatalf("legacy row should load without a stored name (found=%v)", got != nil)
+			}
+			if name := got.ResolveConductorName(); name != "personal" {
+				t.Fatalf("ResolveConductorName = %q, want personal", name)
+			}
+
+			// Save the lazily filled copy, then rename and save again.
+			if err := storage.SaveWithGroups(loaded, NewGroupTreeWithGroups(loaded, nil)); err != nil {
+				t.Fatalf("SaveWithGroups (filled): %v", err)
+			}
+			loaded = load()
+			if loaded[0].ConductorName != "personal" {
+				t.Fatalf("lazily filled name not persisted: %q", loaded[0].ConductorName)
+			}
+			loaded[0].Title = "my assistant"
+			if err := storage.SaveWithGroups(loaded, NewGroupTreeWithGroups(loaded, nil)); err != nil {
+				t.Fatalf("SaveWithGroups (renamed): %v", err)
+			}
+			loaded = load()
+			t.Cleanup(func() { conductorTitleDriftWarned.Delete(loaded[0].ID) })
+			if name := loaded[0].ResolveConductorName(); name != "personal" {
+				t.Fatalf("renamed conductor resolves to %q after save/load, want personal", name)
+			}
+			if FindConductorInstance(loaded, "personal") != loaded[0] {
+				t.Fatal("renamed conductor not found by name after save/load")
+			}
+		})
+	}
+}
+
+// TestGetConductorLastActivity_DecoratedAndRenamed: the heartbeat idle gate
+// and `conductor status` last-activity look the conductor up by identity, not
+// by the exact canonical title, so a decorated or renamed conductor is found.
+func TestGetConductorLastActivity_DecoratedAndRenamed(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	storage, err := NewStorageWithProfile("default")
+	if err != nil {
+		t.Fatalf("setup storage: %v", err)
+	}
+	decorated := NewInstance("🎙 conductor-eps", "/tmp")
+	decorated.IsConductor = true
+	renamed := NewInstance("my assistant", "/tmp")
+	renamed.IsConductor = true
+	renamed.ConductorName = "zeta"
+	worker := NewInstance("worker", "/tmp/work")
+	if err := storage.Save([]*Instance{decorated, renamed, worker}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	t.Cleanup(func() { conductorTitleDriftWarned.Delete(renamed.ID) })
+
+	for _, name := range []string{"eps", "zeta"} {
+		if _, err := GetConductorLastActivity(name, "default"); err != nil {
+			t.Errorf("GetConductorLastActivity(%q): %v (decorated/renamed conductor not found)", name, err)
+		}
 	}
 }

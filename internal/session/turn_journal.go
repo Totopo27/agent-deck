@@ -369,14 +369,29 @@ var inboxConfigOverride *InboxConfig
 // defaults. Prefer ResolveInboxConfigForInstance when the parent instance is
 // at hand: it also follows a renamed conductor's stored name.
 func ResolveInboxConfig(parentTitle string) InboxConfig {
-	return resolveInboxConfigForConductor(ConductorNameFromTitle(parentTitle))
+	return resolveInboxConfigForConductor(inboxConductorNameFromTitle(parentTitle))
 }
 
 // ResolveInboxConfigForInstance is ResolveInboxConfig keyed by the parent's
 // resolved conductor name (ResolveConductorName). A nil parent yields the
 // global [inbox] settings.
 func ResolveInboxConfigForInstance(parent *Instance) InboxConfig {
-	return resolveInboxConfigForConductor(parent.ResolveConductorName())
+	name := parent.ResolveConductorName()
+	if name == "" && parent != nil {
+		name = inboxConductorNameFromTitle(parent.Title)
+	}
+	return resolveInboxConfigForConductor(name)
+}
+
+// inboxConductorNameFromTitle parses the conductor name for the inbox
+// override: the decoration-tolerant parse, else the historical
+// case-insensitive one this lookup has always done (legacyConductorNameFold).
+func inboxConductorNameFromTitle(title string) string {
+	if name := ConductorNameFromTitle(title); name != "" {
+		return name
+	}
+	name, _ := legacyConductorNameFold(title)
+	return name
 }
 
 func resolveInboxConfigForConductor(name string) InboxConfig {

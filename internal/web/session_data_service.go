@@ -381,7 +381,7 @@ func toMenuSession(inst *session.Instance) *MenuSession {
 		LastAccessedAt:     inst.LastAccessedAt,
 		ArchivedAt:         inst.ArchivedAt,
 		IsConductor:        inst.IsConductor,
-		ConductorName:      inst.ResolveConductorName(),
+		ConductorName:      inst.ResolveConductorNameThreadSafe(),
 		ClaudeSessionID:    inst.ClaudeSessionID,
 		GeminiSessionID:    inst.GeminiSessionID,
 		GeminiModel:        inst.GeminiModel,
