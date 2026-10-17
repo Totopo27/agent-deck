@@ -21,12 +21,20 @@ import (
 	"strings"
 )
 
-const claudeConfigDirPrefix = "CLAUDE_CONFIG_DIR="
+const (
+	claudeConfigDirPrefix = "CLAUDE_CONFIG_DIR="
+	// claudeJobDirPrefix marks a process started inside a Claude Code
+	// background job (agent view). A tmux server or worker started from such
+	// a job would otherwise hand it to every pane it spawns, and the hook
+	// handler treats it as "this hook came from a background worker" (#2683).
+	claudeJobDirPrefix = "CLAUDE_JOB_DIR="
+)
 
-// FilterEnv returns env with every TELEGRAM_* var and any inherited
-// CLAUDE_CONFIG_DIR removed. If childConfigDir is non-empty, a single
-// CLAUDE_CONFIG_DIR=<childConfigDir> is appended so the child is pinned to its
-// own config dir. The input slice is not mutated.
+// FilterEnv returns env with every TELEGRAM_* var, any inherited
+// CLAUDE_CONFIG_DIR and any inherited CLAUDE_JOB_DIR removed. If
+// childConfigDir is non-empty, a single CLAUDE_CONFIG_DIR=<childConfigDir> is
+// appended so the child is pinned to its own config dir. The input slice is
+// not mutated.
 func FilterEnv(env []string, childConfigDir string) []string {
 	out := make([]string, 0, len(env)+1)
 	for _, kv := range env {
@@ -34,6 +42,9 @@ func FilterEnv(env []string, childConfigDir string) []string {
 			continue
 		}
 		if strings.HasPrefix(kv, claudeConfigDirPrefix) { // #1163: never inherit parent CCD
+			continue
+		}
+		if strings.HasPrefix(kv, claudeJobDirPrefix) { // #2683: never inherit a bg job marker
 			continue
 		}
 		out = append(out, kv)

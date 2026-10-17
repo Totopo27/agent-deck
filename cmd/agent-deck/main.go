@@ -2149,6 +2149,15 @@ func handleAddCommand(profile string, args []string, inspectFlags func(*flag.Fla
 		exitCLI(1)
 	}
 
+	// #2683: an archived record holding this id would silently win the
+	// duplicate-id guard and the new session would start fresh.
+	if *resumeSession != "" {
+		if msg, code := checkArchivedClaudeIDConflict(instances, nil, *resumeSession); msg != "" {
+			NewCLIOutput(*jsonOutput, false).Error(msg, code)
+			exitCLI(1)
+		}
+	}
+
 	groupTree := session.NewGroupTreeWithGroups(instances, groups)
 
 	// Seed groups declared in config.toml into the DB before resolving the

@@ -8,8 +8,10 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/logging"
+	"github.com/asheshgoplani/agent-deck/internal/statedb"
 )
 
 // Issue #2683: pressing ← in Claude Code's agent view moves the conversation
@@ -65,6 +67,8 @@ func (i *Instance) followClaudeContinuedIn() {
 	}
 	i.ClaudeSessionID = cur
 	i.markClaudeSessionIDVerified()
+	i.ClaudeDetectedAt = time.Now()
+	i.publishClaudeContinuedInRebind(cur)
 	_ = WriteSessionIDLifecycleEvent(SessionIDLifecycleEvent{
 		InstanceID: i.ID,
 		Tool:       "claude",
@@ -78,6 +82,33 @@ func (i *Instance) followClaudeContinuedIn() {
 		slog.String("instance_id", logging.SanitizeValue(i.ID)),
 		slog.String("old_session_id", logging.SanitizeValue(start)),
 		slog.String("claude_session_id", logging.SanitizeValue(cur)))
+}
+
+// publishClaudeContinuedInRebind makes a continued-in rebind durable and
+// visible, the same way bindClaudeSessionFromHook does for a hook rebind.
+//
+// The Restart path that reuses the existing pane (RespawnPane) never re-runs
+// the start-time SetEnvironment, so without this the pane env keeps the old
+// id: the respawned claude inherits it, and RefreshLiveSessionIDs later reads
+// it back and reverts ClaudeSessionID to the stalled predecessor. The SQLite
+// write keeps a fresh load (another process, the next CLI call, a reboot)
+// from resurrecting the old id too.
+func (i *Instance) publishClaudeContinuedInRebind(sessionID string) {
+	if i.tmuxSession != nil && i.tmuxSession.Exists() {
+		_ = i.tmuxSession.SetEnvironment("CLAUDE_SESSION_ID", sessionID)
+	}
+	db := statedb.GetGlobal()
+	if db == nil {
+		return
+	}
+	if err := db.WriteClaudeSessionBinding(i.ID, sessionID, i.ClaudeDetectedAt); err != nil {
+		sessionLog.Warn("claude_continued_in_persist_failed",
+			slog.String("instance_id", logging.SanitizeValue(i.ID)),
+			slog.String("new_id", logging.SanitizeValue(sessionID)),
+			slog.String("error", logging.SanitizeValue(err.Error())))
+		return
+	}
+	i.linkedClaudeSessionID = sessionID
 }
 
 // continuedInSuccessor returns the continuedInSessionId of the transcript's

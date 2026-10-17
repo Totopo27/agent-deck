@@ -44,3 +44,14 @@ func TestFilterEnv_DoesNotMutateInput(t *testing.T) {
 	_ = FilterEnv(in, "/child")
 	assert.Equal(t, []string{"TELEGRAM_X=1", "PATH=/bin"}, in)
 }
+
+// Issue #2683: a tmux server or worker started from inside a Claude Code
+// background job must not hand that job's CLAUDE_JOB_DIR to its children, or
+// every pane's hooks would look like they came from a background worker.
+func TestFilterEnv_StripsClaudeJobDir(t *testing.T) {
+	out := FilterEnv([]string{"CLAUDE_JOB_DIR=/home/u/.claude/jobs/abc", "PATH=/bin"}, "")
+	for _, kv := range out {
+		assert.False(t, strings.HasPrefix(kv, "CLAUDE_JOB_DIR="), "CLAUDE_JOB_DIR leaked: %s", kv)
+	}
+	assert.Contains(t, out, "PATH=/bin")
+}

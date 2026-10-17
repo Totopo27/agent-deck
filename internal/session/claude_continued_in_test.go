@@ -1,10 +1,17 @@
 package session
 
 import (
+	"encoding/json"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/statedb"
+	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
 
 // Issue #2683: Claude Code's agent view moves a backgrounded conversation to a
@@ -103,5 +110,54 @@ func TestBuildClaudeResumeCommand_ContinuedInCycleIsBounded(t *testing.T) {
 	cmd := inst.buildClaudeResumeCommand()
 	if !strings.Contains(cmd, "--resume ") {
 		t.Fatalf("a cyclic chain must still resume something, got %q", cmd)
+	}
+}
+
+// Codex P1 on #2683: the continued-in rebind happens inside
+// buildClaudeResumeCommand, and the existing-pane Restart path (RespawnPane)
+// never re-runs the start-time SetEnvironment or a Save. The rebind must
+// therefore be written to SQLite (a fresh load must see the successor) and to
+// the pane's CLAUDE_SESSION_ID (so RefreshLiveSessionIDs cannot read the old
+// id back and revert the binding).
+func TestFollowClaudeContinuedIn_PersistsAndPublishesSuccessor(t *testing.T) {
+	skipIfNoTmuxBinary(t)
+	projectPath, dir := setupContinuedInProject(t)
+	db := withTempGlobalStateDB(t)
+	const (
+		oldID = "88888888-8888-4888-8888-888888888888"
+		newID = "99999999-9999-4999-8999-999999999999"
+	)
+	writeContinuedInTranscript(t, dir, oldID, newID)
+	writeContinuedInTranscript(t, dir, newID, "")
+
+	inst := NewInstanceWithTool("handoff-persist", projectPath, "claude")
+	inst.ClaudeSessionID = oldID
+	if err := db.SaveInstance(&statedb.InstanceRow{
+		ID: inst.ID, Title: inst.Title, ProjectPath: inst.ProjectPath, GroupPath: inst.GroupPath,
+		Tool: "claude", Status: "idle", CreatedAt: time.Now(),
+		ToolData: json.RawMessage(`{"claude_session_id":"` + oldID + `"}`),
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	name := tmux.SessionPrefix + "continued-in_" + fmt.Sprintf("%d", time.Now().UnixNano())
+	if out, err := exec.Command("tmux", "new-session", "-d", "-s", name, "sh", "-c", "sleep 3600").CombinedOutput(); err != nil {
+		t.Fatalf("tmux new-session: %v (%s)", err, out)
+	}
+	t.Cleanup(func() { _ = exec.Command("tmux", "kill-session", "-t", name).Run() })
+	inst.SetTmuxSessionForTest(&tmux.Session{Name: name})
+	if err := inst.tmuxSession.SetEnvironment("CLAUDE_SESSION_ID", oldID); err != nil {
+		t.Fatalf("seed pane env: %v", err)
+	}
+
+	cmd := inst.buildClaudeResumeCommand()
+	if !strings.Contains(cmd, "--resume "+newID) {
+		t.Fatalf("restart must resume the successor %s, got %q", newID, cmd)
+	}
+	if got := readClaudeSessionIDFromDB(t, db, inst.ID); got != newID {
+		t.Fatalf("stored claude_session_id = %q, want %q: the continued-in rebind never reached SQLite", got, newID)
+	}
+	if got, err := inst.tmuxSession.GetEnvironment("CLAUDE_SESSION_ID"); err != nil || got != newID {
+		t.Fatalf("pane CLAUDE_SESSION_ID = %q (err %v), want %q: a respawn would inherit the stalled id", got, err, newID)
 	}
 }
