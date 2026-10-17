@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.16.29] - 2026-10-17
+
+### Sending
+
+- A Claude prompt suggestion (the dim predicted next message Claude can show in an empty input box) now counts as an empty input box. Automated sends, queued sends, watcher dispatches and the conductor recovery turn reach an idle Claude session that shows one, instead of failing with `composer_blocked`. agent-deck never presses a bare Enter, Tab or Right at a suggestion, so it can no longer submit or accept text nobody wrote; when the suggestion is still painted after typing, Enter waits until the typed message has replaced it. A send whose own message is still sitting unsent in the input box still gets the recovery Enter (#2651).
+- Sessions launched with a parent (workers, a conductor's children) start Claude with prompt suggestions off (`CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false`), on start, restart, resume, the first start of a TUI fork with a parent, and a cross-harness switch into Claude. Root sessions are unchanged. Set it with `[launch] prompt_suggestions = "children-off" | "on" | "off"` (default `children-off`, also `config set launch.prompt_suggestions`), per profile with `[profiles.<name>.claude] prompt_suggestions`, or per session with `session set <id> prompt-suggestions`. Changes apply on the next start or restart (#2651).
+- `session send-keys --enter`, `--named-key Enter|Tab|Right` (any spelling tmux accepts, such as `enter`, `C-m` or `^I`) and a `--text` that is only a CR, TAB or cursor-right check a Claude session's input box first. At a prompt suggestion they press Escape once, wait a second, and then refuse with exit 1, `delivery: "composer_blocked"` and `reason: "prompt_suggestion"`; while a turn runs they refuse without pressing Escape. Without a suggestion nothing changes. `--stream` (TUI insert mode) stays unguarded (#2651).
+- `session send --require-input-prompt` (the guarded send the macOS app uses) delivers to a busy Claude session whose input box is empty, as a message Claude queues for after the current turn, instead of refusing with `composer_blocked`. A draft or paste marker in the busy input box still refuses with `composer_blocked`, and a menu, picker or permission dialog with `menu_open` (a menu under a running spinner used to report `composer_blocked`). Busy Codex, pi and shell sessions are still refused. `launch -m ... --no-wait` now runs the same pre-send check as a waited launch (#2652).
+- `session send --wait --json` to a Claude session over the socket transport no longer times out with "turn identity not established" when the reply has arrived. An idle socket wait returns the next fresh completed reply with `wait_outcome: "observed_not_correlated"` and `verified`, `submitted` and `acknowledged` all false, because a socket message cannot be matched to the turn it caused. Observing the turn and waiting for its reply share the `--timeout` budget. A busy socket wait now prints its one unverified JSON result instead of nothing (#2653, thanks @jaideeppyne, reported by @godlen4332).
+
+### Sessions and accounts
+
+- `session switch-account` works when both accounts' `projects` directories point to the same transcript store: the conversation is already there, so nothing is copied, staged or archived, and the switch fails safely if the store is rebound while it runs. `session set ... account` no longer prints a needless migration warning in that setup. Accounts with separate stores keep the existing checks (#2648, thanks @jaideeppyne, reported by @bautrey).
+- A launch with `-p <profile>` from inside a session of another profile no longer runs on the caller's Claude account: the inherited `AGENTDECK_ACCOUNT`, `CLAUDE_CONFIG_DIR` and `CLAUDE_SECURESTORAGE_CONFIG_DIR` are dropped when `-p` differs from the caller's profile, so the new session uses the target profile's Claude directory. `--account` still wins, same-profile launches are unchanged, and status line wrappers keep the original environment and account attribution (#2650, thanks @jaideeppyne, reported by @godlen4332).
+- A Codex session that shows Working with collapsed queued questions above the input box (`? 1 question`) reads as running instead of idle, and sends treat it as busy. Queued questions without a live turn still read as idle (#2666, #2667, thanks @007hacky007).
+
+### Comms
+
+- pi sessions are text producers in the Comms Ledger: each finished pi run adds one `turn` record with the reply text (the last 16 KiB), tiered urgent when the reply carries a done sentinel or a question and info otherwise. A tool-only, aborted or failed run adds one `status` record and no text. Status display for pi sessions is unchanged. Needs the v3 pi extension: run `agent-deck pi-hooks install` (#2671, thanks @fpmx3bp).
+
+### Fixes
+
+- The status filters `%` (open), `&` (errors) and `^` (archived) now apply to remote session rows as they do to local rows, so a remote with many stopped or failed sessions no longer floods a filtered view. A remote that sends no status keeps showing under `%` (#2627, #2645, thanks @koenzhao).
+- `/` search and Enter on a session hidden by a status or time filter now jumps to it: the filters are cleared the same way the empty-view fallback clears them and collapsed groups are expanded. A session that is gone shows a notice instead of doing nothing (#2655, #2656, thanks @koenzhao).
+- The New Session, Edit Session and account selector option pills no longer show black gaps between them on terminals with a black background (seen on Kitty): the separators use the dialog's surface colour. The three dialogs share one pill renderer (#2647, thanks @siraben).
+- MCP proxy clients (`mcp-proxy`) exit when their stdin closes or their parent process exits, instead of reconnecting in a loop and staying behind as orphans. A backend disconnect with a live client still reconnects, and a request already partly sent is not replayed. The shared pool is unchanged (#2662, thanks @jaideeppyne, reported by @godlen4332).
+- `conductor setup` on Linux creates the notifier and bridge log directories (owner-only for new ones) before it enables the systemd units, so the transition notifier no longer crash-loops with `209/STDOUT` on a fresh account. A log path that cannot be created fails setup before any service starts (#2646, #2654, thanks @jaideeppyne, reported by @tsblack).
+- Web: opening a `/s/<id>` link after using Fleet shows that session's terminal instead of leaving Fleet on top. Skills and MCPs stay open if you were on them, and this also works with browser back and forward (#2679, #2684, thanks @littleKitchen, reported by @bautrey).
+
+### Upgrading
+
+- Prompt suggestions: workers and conductor children start Claude with prompt suggestions off from their next start or restart. Set `[launch] prompt_suggestions = "on"` to keep the old behaviour. A worker launched with `--no-parent` is a root session and keeps suggestions on; set `off` if you want those off too.
+- Raw keys: a script that sends `session send-keys --enter` or `--named-key Tab|Right` to a Claude session can now get exit 1 with `composer_blocked` and `reason: "prompt_suggestion"` when a suggestion is shown. Type the text first with `--text`, then send `--enter`.
+- Guarded send: `--require-input-prompt` to a busy Claude session now delivers a queued message where it used to refuse. A menu drawn under a running spinner reports `menu_open` instead of `composer_blocked`.
+- Socket waits: a caller of `session send --wait --json` over the socket transport should read `wait_outcome`; `observed_not_correlated` means the output is the next reply observed, not a reply proven to answer this message.
+- Cross-profile launches: `agent-deck -p <other> launch` from inside a session now uses the other profile's Claude account. Pass `--account` to pick an account on purpose.
+- pi: run `agent-deck pi-hooks install` on each host (remotes included) to get the v3 extension; `pi-hooks status` reports v2 installs as outdated, and a v2 extension adds no pi records to the Comms Ledger.
+
+Thanks to @jaideeppyne, @koenzhao, @siraben, @007hacky007, @littleKitchen and @fpmx3bp for their pull requests, and to @godlen4332, @bautrey and @tsblack for their reports.
+
 ## [1.16.28] - 2026-10-10
 
 ### Security and toolchain
