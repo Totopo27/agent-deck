@@ -277,20 +277,23 @@ func TestConductorIdentity_InboxConfigFollowsConductor(t *testing.T) {
 }
 
 // TestConductorIdentity_TelegramStripNotWidened: a title that only looks
-// conductor-ish (wrong case, a leading "*" bullet) is an ordinary session and
+// conductor-ish (wrong case, a leading "*" bullet or an ASCII-ish modifier
+// symbol such as "^" or "`") is an ordinary session and
 // keeps the TELEGRAM_* strip; the decoration fallback must not hand it the
 // bot owner's exemption.
 func TestConductorIdentity_TelegramStripNotWidened(t *testing.T) {
 	setupConductorIdentityFixture(t)
-	for _, title := range []string{"Conductor-review", "* conductor-notes", "Conductor-personal", "[x] conductor-personal"} {
+	for _, title := range []string{"Conductor-review", "* conductor-notes", "Conductor-personal", "[x] conductor-personal", "`conductor-notes`", "^conductor-personal", "´conductor-personal"} {
 		inst := &Instance{ID: "strip-" + title, Title: title, Tool: "claude"}
 		if got := telegramStateDirStripExpr(inst); got == "" {
 			t.Errorf("telegramStateDirStripExpr(%q) = \"\", want the TELEGRAM_* strip for a non-conductor", title)
 		}
 	}
-	conductor := &Instance{ID: "strip-conductor", Title: "🎙 conductor-personal", Tool: "claude"}
-	if got := telegramStateDirStripExpr(conductor); got != "" {
-		t.Errorf("telegramStateDirStripExpr(decorated conductor) = %q, want no strip", got)
+	for _, title := range []string{"🎙 conductor-personal", "👋🏽 conductor-personal"} {
+		conductor := &Instance{ID: "strip-conductor-" + title, Title: title, Tool: "claude"}
+		if got := telegramStateDirStripExpr(conductor); got != "" {
+			t.Errorf("telegramStateDirStripExpr(%q) = %q, want no strip", title, got)
+		}
 	}
 }
 

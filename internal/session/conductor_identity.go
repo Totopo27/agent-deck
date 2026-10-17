@@ -49,15 +49,19 @@ func ConductorNameFromTitle(title string) string {
 }
 
 // isConductorTitleDecoration reports whether r may precede "conductor-" in a
-// decorated conductor title: whitespace, emoji and other symbols (unicode So,
-// Sk, which covers skin-tone modifiers), the emoji variation selectors and
-// the zero-width joiner that glue multi-codepoint emoji together.
+// decorated conductor title: whitespace, emoji and other symbols (unicode So),
+// the emoji skin-tone modifiers, the emoji variation selectors and the
+// zero-width joiner that glue multi-codepoint emoji together. The rest of
+// unicode Sk is excluded on purpose: it holds keyboard characters like "^"
+// and "`" that must not turn an ordinary title into a conductor.
 func isConductorTitleDecoration(r rune) bool {
-	switch r {
-	case '\uFE0E', '\uFE0F', '\u200D':
+	switch {
+	case r == '\uFE0E', r == '\uFE0F', r == '\u200D':
+		return true
+	case r >= '\U0001F3FB' && r <= '\U0001F3FF':
 		return true
 	}
-	return unicode.IsSpace(r) || unicode.Is(unicode.So, r) || unicode.Is(unicode.Sk, r)
+	return unicode.IsSpace(r) || unicode.Is(unicode.So, r)
 }
 
 // legacyConductorNameFold is the pre-identity title parse kept for the two
