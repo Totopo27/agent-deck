@@ -503,6 +503,13 @@ type Instance struct {
 	// account or model change clears it.
 	IntendedSwitch *IntendedSwitch `json:"intended_switch,omitempty"`
 
+	// LimitVerdictResetAt is when the session's account or model was last
+	// changed. A transcript limit/block rejection stamped at or before it is
+	// about the old account/model and is ignored (usagelimit.go). Zero when
+	// never set. Persisted in the tool_data extras zone
+	// (limit_verdict_reset.go).
+	LimitVerdictResetAt time.Time `json:"limit_verdict_reset_at,omitempty"`
+
 	// PluginChannelLinkDisabled opts the session out of the catalog-driven
 	// auto-link between Plugins and Channels (RFC §4.7). When true, an
 	// `--plugin foo` whose catalog entry has EmitsChannel=true does NOT

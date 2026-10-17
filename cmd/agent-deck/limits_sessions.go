@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
@@ -23,6 +24,10 @@ type limitSessionJSON struct {
 // session's launch model override ("" means the tool default).
 type limitSessionRow struct {
 	ID, Title, Account, Model, Substate, Detail string
+	// ConfigDir is the session's resolved Claude config dir (account,
+	// conductor, group, env, profile, global or default): what decides
+	// which slot's quota the session spends.
+	ConfigDir string
 }
 
 // limitsBlockedReason is the blocked_reason when the session carries no detail.
@@ -59,15 +64,36 @@ func isFableModel(model string) bool {
 	return strings.Contains(strings.ToLower(model), "fable")
 }
 
+func isOpusModel(model string) bool {
+	return strings.Contains(strings.ToLower(model), "opus")
+}
+
+// canonicalLimitsDir normalises a Claude config dir for slot matching: ~
+// expanded, cleaned, symlinks resolved when the path exists (the same
+// canonical form ClaudeUsageFeedSlots dedupes slots by). "" stays "".
+func canonicalLimitsDir(dir string) string {
+	dir = strings.TrimSpace(dir)
+	if dir == "" {
+		return ""
+	}
+	dir = session.ExpandPath(dir)
+	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+		return resolved
+	}
+	return filepath.Clean(dir)
+}
+
 // annotateClaudeLimits marks each Claude account that a live session reports
 // account-blocked as blocked, and lists on each account the sessions that are
 // account-blocked, model-limited or usage-limited, each with its fix. A
-// session with no stored account belongs to the default login entry. Pure:
+// session belongs to the slot owning its resolved config dir, else to its
+// stored account, else (no account) to the default login entry. Pure:
 // accounts is copied, never mutated in place.
 func annotateClaudeLimits(accounts []limitAccountJSON, rows []limitSessionRow) []limitAccountJSON {
 	out := make([]limitAccountJSON, len(accounts))
 	copy(out, accounts)
 	index := map[string]int{}
+	byDir := map[string]int{}
 	defaultIdx := -1
 	for i, a := range out {
 		if a.Harness != "claude" {
@@ -75,11 +101,27 @@ func annotateClaudeLimits(accounts []limitAccountJSON, rows []limitSessionRow) [
 		}
 		if a.Default {
 			defaultIdx = i
-		} else {
-			index[a.Name] = i
+			continue
+		}
+		index[a.Name] = i
+		if dir := canonicalLimitsDir(a.ConfigDir); dir != "" {
+			if _, taken := byDir[dir]; !taken {
+				byDir[dir] = i
+			}
 		}
 	}
+	// A session spends the quota of the slot that owns its resolved config
+	// dir, however that dir was chosen (account, conductor, group, env). The
+	// default login only gets the sessions no slot owns.
 	accountOf := func(r limitSessionRow) int {
+		if dir := canonicalLimitsDir(r.ConfigDir); dir != "" {
+			if i, ok := index[r.Account]; ok && canonicalLimitsDir(out[i].ConfigDir) == dir {
+				return i
+			}
+			if i, ok := byDir[dir]; ok {
+				return i
+			}
+		}
 		if r.Account == "" {
 			return defaultIdx
 		}
@@ -133,27 +175,35 @@ func annotateClaudeLimits(accounts []limitAccountJSON, rows []limitSessionRow) [
 		}
 		acct := out[i].Name
 		s := limitSessionJSON{ID: r.ID, Title: r.Title, Substate: r.Substate, Detail: r.Detail}
-		modelFix := func(model string) string {
-			if model == "" {
-				model = "model"
-			}
-			return fmt.Sprintf("agent-deck session set %s model %s --intended '%s cap' && agent-deck session restart %s", r.ID, limitsFallbackModel, model, r.ID)
-		}
 		capModel := r.Model
 		if capModel == "" {
 			capModel = r.Detail
+		}
+		modelFix := func(model, detail string) string {
+			if model == "" {
+				model = "model"
+			}
+			// Already on the fallback, or capped on Opus: a model switch
+			// would be a no-op, so wait out the cap or move account.
+			if r.Model == limitsFallbackModel || isOpusModel(capModel) {
+				return fmt.Sprintf("wait for reset (%s) or move account: agent-deck session set %s account %s --intended '%s cap' && agent-deck session restart %s", detail, r.ID, moveTarget(i), model, r.ID)
+			}
+			return fmt.Sprintf("agent-deck session set %s model %s --intended '%s cap' && agent-deck session restart %s", r.ID, limitsFallbackModel, model, r.ID)
 		}
 		switch r.Substate {
 		case string(session.SubstateAccountBlocked):
 			s.Fix = fmt.Sprintf("agent-deck session set %s account %s --intended '%s blocked' && agent-deck session restart %s", r.ID, moveTarget(i), acct, r.ID)
 		case string(session.SubstateModelLimit):
-			s.Fix = modelFix(capModel)
+			s.Fix = modelFix(capModel, r.Detail)
 		case string(session.SubstateUsageLimit):
-			if pct, ok := fresh7d(out[i]); ok && pct < 100 && isFableModel(r.Model) {
-				// Fable's own weekly cap, not the account's (bug 4).
+			// Fable's own weekly cap, not the account's (bug 4): only when the
+			// 429 names the weekly window and no fresh account window (5h
+			// included) is at its limit.
+			if pct, ok := fresh7d(out[i]); ok && pct < 100 && isFableModel(r.Model) &&
+				strings.HasPrefix(r.Detail, "weekly") && !accountLimitHit(out[i]) {
 				s.Substate = string(session.SubstateModelLimit)
 				s.Detail = "Fable weekly (account has room)"
-				s.Fix = modelFix(r.Model)
+				s.Fix = modelFix(r.Model, s.Detail)
 			} else {
 				s.Fix = fmt.Sprintf("wait for reset (%s) or move account", r.Detail)
 			}
@@ -188,7 +238,9 @@ func limitsTextNotes(a limitAccountJSON) []string {
 }
 
 // liveClaudeSessionRows loads the profile's Claude-compatible, non-stopped
-// sessions read-only (nothing is saved) with their substate.
+// sessions read-only (nothing is saved) with their transcript limit verdict
+// and resolved config dir. It never calls Substate: that captures panes and
+// persists hook-lag samples, neither of which a report may do.
 func liveClaudeSessionRows(profile string) []limitSessionRow {
 	_, instances, _, err := loadSessionData(profile)
 	if err != nil {
@@ -199,19 +251,21 @@ func liveClaudeSessionRows(profile string) []limitSessionRow {
 		if inst == nil || !session.IsClaudeCompatible(inst.Tool) || inst.GetStatusThreadSafe() == session.StatusStopped {
 			continue
 		}
-		sub := inst.Substate()
+		// The transcript verdict alone: no pane capture, nothing written.
+		sub, detail := inst.TranscriptLimit()
 		switch sub {
 		case session.SubstateAccountBlocked, session.SubstateModelLimit, session.SubstateUsageLimit:
 		default:
 			continue
 		}
 		rows = append(rows, limitSessionRow{
-			ID:       inst.ID,
-			Title:    inst.GetTitleThreadSafe(),
-			Account:  inst.GetAccountThreadSafe(),
-			Model:    inst.LaunchModelID(),
-			Substate: string(sub),
-			Detail:   inst.SubstateDetail(),
+			ID:        inst.ID,
+			Title:     inst.GetTitleThreadSafe(),
+			Account:   inst.GetAccountThreadSafe(),
+			Model:     inst.LaunchModelID(),
+			Substate:  string(sub),
+			Detail:    detail,
+			ConfigDir: session.GetClaudeConfigDirForInstance(inst),
 		})
 	}
 	return rows

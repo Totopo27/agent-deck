@@ -465,6 +465,11 @@ func SetField(inst *Instance, field, value string, extraArgsTokens []string) (ol
 		// A new switch is not covered by an earlier intent; the CLI re-marks
 		// it after SetField when --intended is given.
 		inst.IntendedSwitch = nil
+		// The resumed conversation still ends in the old account's rejection;
+		// it must not keep the session limited on the new one.
+		if oldValue != candidate {
+			inst.resetLimitVerdict(time.Now())
+		}
 
 	case FieldIdleTimeout:
 		// #1143: parses a Go duration like "30m"; 0 (or "0", "") disables.
@@ -526,8 +531,12 @@ func SetField(inst *Instance, field, value string, extraArgsTokens []string) (ol
 		} else if aerr := inst.ApplyLaunchModel(trimmed); aerr != nil {
 			return oldValue, nil, &MutationError{Field: field, Msg: aerr.Error()}
 		}
-		// Same as FieldAccount: an unmarked switch drops the old intent.
+		// Same as FieldAccount: an unmarked switch drops the old intent, and
+		// a real change resets the transcript limit verdict.
 		inst.IntendedSwitch = nil
+		if inst.LaunchModelID() != oldValue {
+			inst.resetLimitVerdict(time.Now())
+		}
 
 	case FieldIntendedSwitch:
 		if inst.IntendedSwitch != nil {

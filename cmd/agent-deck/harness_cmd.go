@@ -357,6 +357,9 @@ type limitAccountJSON struct {
 	// Sessions lists the live sessions on this account that are
 	// account-blocked, model-limited or usage-limited, each with its fix.
 	Sessions []limitSessionJSON `json:"sessions,omitempty"`
+	// ConfigDir is the slot's Claude config dir, used to match sessions to
+	// the account they run on. Not part of the JSON report.
+	ConfigDir string `json:"-"`
 }
 
 func epochRFC3339(sec *int64) string {
@@ -385,7 +388,7 @@ func claudeLimits(cfg *session.UserConfig, now time.Time) []limitAccountJSON {
 		}
 	}
 	for _, a := range slots {
-		acc := limitAccountJSON{Harness: "claude", Name: a.Name, Windows: []limitWindowJSON{}, Source: "quota cache (statusLine ingester)", Default: !named[a.Name]}
+		acc := limitAccountJSON{Harness: "claude", Name: a.Name, Windows: []limitWindowJSON{}, Source: "quota cache (statusLine ingester)", Default: !named[a.Name], ConfigDir: a.ConfigDir}
 		store, err := quota.NewStore(a.Name)
 		if err == nil {
 			snaps, _ := store.Load()

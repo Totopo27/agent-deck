@@ -339,6 +339,19 @@ func (r transcriptRecord) fresh(now time.Time, maxAge time.Duration) bool {
 	return age >= 0 && age <= maxAge
 }
 
+// after reports whether the record's timestamp is strictly after t. A zero t
+// admits every record; an unparseable timestamp is never after a set t.
+func (r transcriptRecord) after(t time.Time) bool {
+	if t.IsZero() {
+		return true
+	}
+	ts, err := time.Parse(time.RFC3339, strings.TrimSpace(r.Timestamp))
+	if err != nil {
+		return false
+	}
+	return ts.After(t)
+}
+
 // latestAssistantTurnIsRateLimited reports whether the MOST RECENT
 // main-conversation assistant turn at path is a believed limit or block
 // rejection of any kind, plus whether a verdict could be formed at all. It is
@@ -357,6 +370,15 @@ func latestAssistantTurnIsRateLimited(path string, now time.Time) (limited bool,
 // Callers must treat that as "unknown", never as "fine" — silence being mistaken
 // for health is the failure this whole detector exists to stop.
 func latestAssistantTurnLimit(path string, now time.Time) (verdict limitVerdict, ok bool) {
+	return latestAssistantTurnLimitSince(path, now, time.Time{})
+}
+
+// latestAssistantTurnLimitSince is latestAssistantTurnLimit that also ignores
+// a rejection stamped at or before resetAt (the session's last account/model
+// switch, limit_verdict_reset.go): such a record is about the old account or
+// model, so it yields no verdict (ok true) and the next real turn decides. A
+// zero resetAt ignores nothing.
+func latestAssistantTurnLimitSince(path string, now, resetAt time.Time) (verdict limitVerdict, ok bool) {
 	f, err := os.Open(path)
 	if err != nil {
 		return limitVerdict{}, false
@@ -434,6 +456,11 @@ func latestAssistantTurnLimit(path string, now time.Time) (verdict limitVerdict,
 		}
 		// A rejection older than its bound is no longer evidence about now.
 		if v.Kind != SubstateNone && !rec.fresh(now, maxAge) {
+			v = limitVerdict{}
+		}
+		// A rejection from before the last account/model switch is not about
+		// the account or model the session runs on now.
+		if v.Kind != SubstateNone && !rec.after(resetAt) {
 			v = limitVerdict{}
 		}
 		return v, true, true
@@ -543,6 +570,15 @@ func transcriptBelongsToSession(path, sessionID string) bool {
 	return filepath.Base(path) == sessionID+".jsonl"
 }
 
+// TranscriptLimit returns the transcript-derived limit verdict alone
+// (usage-limit, model-limit, account-blocked, or SubstateNone) with its
+// detail. Unlike Substate it never captures the pane and persists nothing,
+// so a read-only report (`agent-deck limits`) can call it for every session.
+func (i *Instance) TranscriptLimit() (Substate, string) {
+	v := i.transcriptLimit()
+	return v.Kind, v.Detail
+}
+
 // usageLimited reports whether this instance's latest assistant turn was a
 // recent limit or block rejection of any kind, throttled to
 // usageLimitScanInterval.
@@ -604,6 +640,7 @@ func (i *Instance) transcriptLimit() limitVerdict {
 	i.lastUsageLimitScanAt = time.Now()
 	i.usageLimitScanGen++
 	gen := i.usageLimitScanGen
+	resetAt := i.LimitVerdictResetAt
 	i.mu.Unlock()
 
 	path := locateHandoffTranscript(i)
@@ -619,7 +656,7 @@ func (i *Instance) transcriptLimit() limitVerdict {
 		return i.usageLimitVerdictFor(sessionID)
 	}
 
-	verdict, ok := latestAssistantTurnLimit(path, time.Now())
+	verdict, ok := latestAssistantTurnLimitSince(path, time.Now(), resetAt)
 	if !ok {
 		// No formed verdict (unreadable, or no assistant turn in the file): leave
 		// the previous answer standing rather than silently reporting "not
