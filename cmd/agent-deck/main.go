@@ -1826,7 +1826,7 @@ func handleAddCommand(profile string, args []string, inspectFlags func(*flag.Fla
 	wrapper := fs.String(
 		"wrapper",
 		"",
-		"Wrapper command (use {command} to include tool command, e.g., 'nvim +\"terminal {command}\"')",
+		"Wrapper command (use {command} to include tool command, e.g., 'nvim +\"terminal {command}\"'; an unquoted {command} after a prefix gets the command as one argv, so for remote use --ssh or quote {command})",
 	)
 	parent := fs.String("parent", "", "Parent session (creates sub-session, inherits group)")
 	parentShort := fs.String("p", "", "Parent session (short)")

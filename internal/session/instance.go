@@ -4975,29 +4975,84 @@ func (i *Instance) applyWrapper(command string) (string, error) {
 // ...": env tried to exec a program named "export", the prelude was skipped
 // and the agent ran without X. In that case the command is handed over as a
 // single `bash -c '<command>'` argv instead, so the wrapper's assignment is
-// inherited by the whole line, prelude and agent alike.
+// inherited by the whole line, prelude and agent alike. Such a prefix
+// wrapper therefore receives the command as one argv; a wrapper that
+// re-parses its arguments as a string ("ssh host {command}") should use
+// --ssh or quote the placeholder.
 //
 // Text after {command} ("{command} --flag", issue #601) must still reach the
 // agent, not become bash's $0/$1, so when there is any the payload ends in
 // "$@" and bash is given an explicit $0: `bash -c '<command> "$@"' bash
 // --flag` appends the flags exactly where the textual splice put them.
 //
+// A placeholder inside a quoted string (bash -lc "{command}", nvim
+// +'terminal {command}') is already handed to a shell as a whole, so it is
+// substituted in place, escaped for that quote context; the argv form there
+// would break the wrapper's own quoting.
+//
 // A wrapper that starts with {command}, or a plain single command, keeps the
 // textual substitution unchanged.
 func substituteWrapperCommand(wrapper, command string) string {
-	prefix, suffix, _ := strings.Cut(wrapper, wrapperPlaceholder)
-	if strings.TrimSpace(prefix) == "" || !commandNeedsShell(command) {
-		return strings.ReplaceAll(wrapper, wrapperPlaceholder, command)
+	parts := strings.Split(wrapper, wrapperPlaceholder)
+	prefix := parts[0]
+	sub := command
+	if strings.TrimSpace(prefix) != "" && placeholderQuoteContext(prefix) == 0 && commandNeedsShell(command) {
+		payload := command
+		if strings.TrimSpace(strings.Join(parts[1:], "")) != "" {
+			payload += ` "$@"`
+		}
+		sub = "bash -c '" + strings.ReplaceAll(payload, "'", `'"'"'`) + "'"
+		if payload != command {
+			sub += " bash"
+		}
 	}
-	payload := command
-	if strings.TrimSpace(strings.ReplaceAll(suffix, wrapperPlaceholder, "")) != "" {
-		payload += ` "$@"`
+
+	var b strings.Builder
+	b.WriteString(prefix)
+	for n, part := range parts[1:] {
+		switch placeholderQuoteContext(strings.Join(parts[:n+1], wrapperPlaceholder)) {
+		case '\'':
+			b.WriteString(strings.ReplaceAll(command, "'", `'"'"'`))
+		case '"':
+			b.WriteString(doubleQuoteEscaper.Replace(command))
+		default:
+			b.WriteString(sub)
+		}
+		b.WriteString(part)
 	}
-	sub := "bash -c '" + strings.ReplaceAll(payload, "'", `'"'"'`) + "'"
-	if payload != command {
-		sub += " bash"
+	return b.String()
+}
+
+// doubleQuoteEscaper escapes the characters that stay special inside a
+// double-quoted shell string.
+var doubleQuoteEscaper = strings.NewReplacer(`\`, `\\`, `"`, `\"`, "$", `\$`, "`", "\\`")
+
+// placeholderQuoteContext scans prefix with shell quoting rules and returns
+// the quote character still open at its end (single or double), or 0.
+func placeholderQuoteContext(prefix string) byte {
+	var quote byte
+	for i := 0; i < len(prefix); i++ {
+		c := prefix[i]
+		switch quote {
+		case '\'':
+			if c == '\'' {
+				quote = 0
+			}
+		case '"':
+			if c == '\\' {
+				i++
+			} else if c == '"' {
+				quote = 0
+			}
+		default:
+			if c == '\\' {
+				i++
+			} else if c == '\'' || c == '"' {
+				quote = c
+			}
+		}
 	}
-	return strings.ReplaceAll(wrapper, wrapperPlaceholder, sub)
+	return quote
 }
 
 // commandNeedsShell reports whether command only works when parsed by a

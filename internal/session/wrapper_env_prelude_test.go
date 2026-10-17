@@ -167,3 +167,124 @@ func TestWrapperEnvPrelude_StrippedTelegramVarIsNotSilent(t *testing.T) {
 		t.Fatalf("conductor prelude must not touch TELEGRAM_STATE_DIR: %q", p)
 	}
 }
+
+// TestWrapperEnvPrelude_QuotedPlaceholder: a wrapper that puts {command}
+// inside a quoted shell string (bash -c "{command}", the documented
+// nvim +"terminal {command}", script -qec "{command}") already hands the
+// whole line to a shell, so it keeps the textual substitution. Inserting
+// `bash -c '...'` there broke the wrapper's own quoting (exit 127,
+// unexpected EOF), and a single-quoted placeholder got "$@" bash spliced in
+// before the user's closing quote.
+func TestWrapperEnvPrelude_QuotedPlaceholder(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		wrapper string
+		wantTG  bool
+	}{
+		{"double quoted", `bash -c "{command}"`, false},
+		{"double quoted with env prefix", `env TELEGRAM_STATE_DIR=%s bash -c "{command}"`, true},
+		{"double quoted with suffix", `bash -c "{command} --wrapper-flag"`, false},
+		{"single quoted", `bash -c '{command}'`, false},
+		{"single quoted with env prefix", `env TELEGRAM_STATE_DIR=%s bash -c '{command}'`, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			inst, outFile, tgDir := wrapperPreludeFixture(t)
+			inst.Wrapper = strings.Replace(tc.wrapper, "%s", tgDir, 1)
+
+			line, got := runLaunchLine(t, inst, outFile)
+			if strings.Contains(line, `"$@"`) {
+				t.Errorf("quoted placeholder must not get a \"$@\" payload:\n  line: %s", line)
+			}
+			if tc.wantTG && !strings.Contains(got, "TG="+tgDir+"\n") {
+				t.Errorf("agent did not see the wrapper's TELEGRAM_STATE_DIR:\n  recorded: %q\n  line: %s", got, line)
+			}
+			if !strings.Contains(got, "PRELUDE=from-env-file\n") {
+				t.Errorf("agent did not see the env_file prelude var:\n  recorded: %q\n  line: %s", got, line)
+			}
+		})
+	}
+}
+
+// TestWrapperEnvPrelude_OperatorPrefixWrapper: a wrapper whose prefix is
+// itself a shell line ending in an operator ("source x && {command}",
+// "export X=..; {command}") must still run the agent with both the wrapper's
+// variable and the prelude.
+func TestWrapperEnvPrelude_OperatorPrefixWrapper(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		wrapper string
+	}{
+		{"source and", "source %s && {command}"},
+		{"export semicolon", "export TELEGRAM_STATE_DIR=%s; {command}"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			inst, outFile, tgDir := wrapperPreludeFixture(t)
+			arg := tgDir
+			if strings.HasPrefix(tc.wrapper, "source") {
+				arg = filepath.Join(inst.ProjectPath, "wrapper.env")
+				if err := os.WriteFile(arg, []byte("export TELEGRAM_STATE_DIR="+tgDir+"\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			inst.Wrapper = strings.Replace(tc.wrapper, "%s", arg, 1)
+
+			line, got := runLaunchLine(t, inst, outFile)
+			if !strings.Contains(got, "TG="+tgDir+"\n") {
+				t.Errorf("agent did not see the wrapper's TELEGRAM_STATE_DIR:\n  recorded: %q\n  line: %s", got, line)
+			}
+			if !strings.Contains(got, "PRELUDE=from-env-file\n") {
+				t.Errorf("agent did not see the env_file prelude var:\n  recorded: %q\n  line: %s", got, line)
+			}
+		})
+	}
+}
+
+// TestPlaceholderQuoteContext pins the quote-context scan used by
+// substituteWrapperCommand.
+func TestPlaceholderQuoteContext(t *testing.T) {
+	for _, tc := range []struct {
+		prefix string
+		want   byte
+	}{
+		{``, 0},
+		{`env X=1 `, 0},
+		{`bash -lc "`, '"'},
+		{`nvim +"terminal `, '"'},
+		{`nvim +'terminal `, '\''},
+		{`script -qec "`, '"'},
+		{`nix-shell --run "`, '"'},
+		{`echo "a" `, 0},
+		{`echo 'a' `, 0},
+		{`echo \" `, 0},
+		{`echo \' `, 0},
+		{`bash -c "it's `, '"'},
+		{`echo 'say \' `, 0},
+		{`bash -c "say \" `, '"'},
+		{`echo "'" `, 0},
+	} {
+		if got := placeholderQuoteContext(tc.prefix); got != tc.want {
+			t.Errorf("placeholderQuoteContext(%q) = %q, want %q", tc.prefix, got, tc.want)
+		}
+	}
+}
+
+// TestApplyWrapper_QuotedPlaceholderShape pins the in-place, quote-escaped
+// substitution for a quoted placeholder (no bash -c, no "$@").
+func TestApplyWrapper_QuotedPlaceholderShape(t *testing.T) {
+	inst := NewInstance("wrap-quoted", "/tmp")
+	inst.Tool = "claude"
+	cmd := `export A='b' && [ -f "$F" ] && exec claude`
+	for _, tc := range []struct{ wrapper, want string }{
+		{`nvim +"terminal {command}"`, `nvim +"terminal export A='b' && [ -f \"\$F\" ] && exec claude"`},
+		{`nvim +'terminal {command}' +'startinsert'`, `nvim +'terminal export A='"'"'b'"'"' && [ -f "$F" ] && exec claude' +'startinsert'`},
+	} {
+		inst.Wrapper = tc.wrapper
+		got, err := inst.applyWrapper(cmd)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != tc.want {
+			t.Errorf("wrapper %q:\n  got:  %s\n  want: %s", tc.wrapper, got, tc.want)
+		}
+	}
+}
