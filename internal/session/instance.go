@@ -11043,6 +11043,10 @@ func (i *Instance) buildClaudeResumeCommand() string {
 	// common flush-race case without slowing the happy path (retry only
 	// fires when the first check comes back negative AND we have a
 	// non-empty ClaudeSessionID).
+	// #2683: an agent-view handoff ends the bound transcript with a
+	// continued-in record; resume the successor, not the stalled copy.
+	i.followClaudeContinuedIn()
+
 	// #1815 identity guard: refuse outright when the id about to be resumed
 	// is not this session's own recorded conversation id (missing recorded id,
 	// or a mismatch). The refused id is replaced by a freshly minted one so
