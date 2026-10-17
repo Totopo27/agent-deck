@@ -169,7 +169,9 @@ func (i *Instance) warnConductorTitleDrift(name, title string) {
 	}
 	sessionLog.Warn("conductor_title_drift",
 		slog.String("session_id", logging.SanitizeValue(i.ID)),
-		slog.String("title", logging.SanitizeValue(title)),
+		// The inline ReplaceAll calls are no-ops after SanitizeValue; they are
+		// the newline barrier CodeQL go/log-injection recognises at the sink.
+		slog.String("title", strings.ReplaceAll(strings.ReplaceAll(logging.SanitizeValue(title), "\n", ""), "\r", "")),
 		slog.String("conductor", logging.SanitizeValue(name)),
 		slog.String("detail", "title no longer matches the conductor name; settings still resolve by the stored name"))
 }

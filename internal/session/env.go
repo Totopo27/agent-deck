@@ -801,7 +801,9 @@ func (i *Instance) telegramStripSources() []string {
 		return []string{stripExpr}
 	}
 	sessionLog.Warn("session wrapper TELEGRAM_STATE_DIR stripped for non-owning claude session",
-		slog.String("session", logging.SanitizeValue(i.Title)))
+		// The inline ReplaceAll calls are no-ops after SanitizeValue; they are
+		// the newline barrier CodeQL go/log-injection recognises at the sink.
+		slog.String("session", strings.ReplaceAll(strings.ReplaceAll(logging.SanitizeValue(i.Title), "\n", ""), "\r", "")))
 	return []string{
 		paneWarning("wrapper TELEGRAM_STATE_DIR is unset for this session (not a conductor or telegram channel owner); use --channel plugin:telegram@... or --inherit-telegram-env"),
 		stripExpr,

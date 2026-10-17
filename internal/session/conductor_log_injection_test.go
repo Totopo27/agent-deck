@@ -3,7 +3,11 @@ package session
 import (
 	"bytes"
 	"encoding/json"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"log/slog"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -88,4 +92,70 @@ func TestTelegramStripWarningLog_ControlCharsInTitle(t *testing.T) {
 		}
 		assertOneCleanRecord(t, buf, title)
 	}
+}
+
+// TestLogInjectionSinks_InlineNewlineBarrier pins the shape CodeQL
+// go/log-injection needs at the two title log sinks: it does not treat
+// logging.SanitizeValue as a barrier, so the logged value must be wrapped in
+// strings.ReplaceAll calls that remove "\n" and "\r" right at the slog.String
+// call (alerts 458/459 reopened when only SanitizeValue was used).
+func TestLogInjectionSinks_InlineNewlineBarrier(t *testing.T) {
+	cases := []struct{ file, fn, key string }{
+		{"conductor_identity.go", "warnConductorTitleDrift", "title"},
+		{"env.go", "telegramStripSources", "session"},
+	}
+	for _, c := range cases {
+		fset := token.NewFileSet()
+		f, err := parser.ParseFile(fset, c.file, nil, 0)
+		if err != nil {
+			t.Fatalf("parse %s: %v", c.file, err)
+		}
+		found := false
+		ast.Inspect(f, func(n ast.Node) bool {
+			fd, ok := n.(*ast.FuncDecl)
+			if !ok || fd.Name.Name != c.fn {
+				return true
+			}
+			ast.Inspect(fd.Body, func(n ast.Node) bool {
+				call, ok := n.(*ast.CallExpr)
+				if !ok || !isSelector(call.Fun, "slog", "String") || len(call.Args) != 2 {
+					return true
+				}
+				if lit, ok := call.Args[0].(*ast.BasicLit); !ok || lit.Value != strconv.Quote(c.key) {
+					return true
+				}
+				found = true
+				removed := map[string]bool{}
+				for e := call.Args[1]; ; {
+					inner, ok := e.(*ast.CallExpr)
+					if !ok || !isSelector(inner.Fun, "strings", "ReplaceAll") || len(inner.Args) != 3 {
+						break
+					}
+					if lit, ok := inner.Args[1].(*ast.BasicLit); ok {
+						if v, err := strconv.Unquote(lit.Value); err == nil {
+							removed[v] = true
+						}
+					}
+					e = inner.Args[0]
+				}
+				if !removed["\n"] || !removed["\r"] {
+					t.Errorf("%s:%s: slog.String(%q, ...) lacks inline strings.ReplaceAll barriers for \\n and \\r", c.file, c.fn, c.key)
+				}
+				return true
+			})
+			return false
+		})
+		if !found {
+			t.Errorf("%s:%s: no slog.String(%q, ...) log call found", c.file, c.fn, c.key)
+		}
+	}
+}
+
+func isSelector(e ast.Expr, pkg, name string) bool {
+	sel, ok := e.(*ast.SelectorExpr)
+	if !ok || sel.Sel.Name != name {
+		return false
+	}
+	id, ok := sel.X.(*ast.Ident)
+	return ok && id.Name == pkg
 }
