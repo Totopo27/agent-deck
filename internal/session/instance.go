@@ -4960,9 +4960,67 @@ func (i *Instance) applyWrapper(command string) (string, error) {
 		return command, nil
 	}
 	if strings.Contains(wrapper, wrapperPlaceholder) {
-		return strings.ReplaceAll(wrapper, wrapperPlaceholder, command), nil
+		return substituteWrapperCommand(wrapper, command), nil
 	}
 	return wrapper, nil
+}
+
+// substituteWrapperCommand replaces {command} in wrapper with command.
+//
+// A wrapper that puts a program or assignment in front of {command} ("env
+// X=Y {command}", "nice {command}", "X=Y {command}") expects {command} to be
+// ONE command. The launch command is usually a compound shell line — the env
+// prelude from buildEnvSourceCommand ("export A=.. && source f && ...") plus
+// "exec claude ..." — so a textual splice produced "env X=Y export A=.. &&
+// ...": env tried to exec a program named "export", the prelude was skipped
+// and the agent ran without X. In that case the command is handed over as a
+// single `bash -c '<command>'` argv instead, so the wrapper's assignment is
+// inherited by the whole line, prelude and agent alike.
+//
+// Text after {command} ("{command} --flag", issue #601) must still reach the
+// agent, not become bash's $0/$1, so when there is any the payload ends in
+// "$@" and bash is given an explicit $0: `bash -c '<command> "$@"' bash
+// --flag` appends the flags exactly where the textual splice put them.
+//
+// A wrapper that starts with {command}, or a plain single command, keeps the
+// textual substitution unchanged.
+func substituteWrapperCommand(wrapper, command string) string {
+	prefix, suffix, _ := strings.Cut(wrapper, wrapperPlaceholder)
+	if strings.TrimSpace(prefix) == "" || !commandNeedsShell(command) {
+		return strings.ReplaceAll(wrapper, wrapperPlaceholder, command)
+	}
+	payload := command
+	if strings.TrimSpace(strings.ReplaceAll(suffix, wrapperPlaceholder, "")) != "" {
+		payload += ` "$@"`
+	}
+	sub := "bash -c '" + strings.ReplaceAll(payload, "'", `'"'"'`) + "'"
+	if payload != command {
+		sub += " bash"
+	}
+	return strings.ReplaceAll(wrapper, wrapperPlaceholder, sub)
+}
+
+// commandNeedsShell reports whether command only works when parsed by a
+// shell: it has an operator or grouping (&&, ;, |, redirection, subshell) or
+// starts with a builtin or VAR=val assignment that no program prefix can
+// exec. False positives are harmless (bash -c runs a simple command the same).
+func commandNeedsShell(command string) bool {
+	if strings.ContainsAny(command, ";&|<>()`\n") {
+		return true
+	}
+	fields := strings.Fields(command)
+	if len(fields) == 0 {
+		return false
+	}
+	if strings.Contains(fields[0], "=") {
+		return true
+	}
+	switch fields[0] {
+	case "export", "source", ".", "cd", "exec", "unset", "eval", "set",
+		"if", "for", "while", "until", "case", "{", "[", "[[", "!", "time":
+		return true
+	}
+	return false
 }
 
 // hasEffectiveWrapper returns true if the instance has a wrapper configured,

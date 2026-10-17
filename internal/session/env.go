@@ -57,9 +57,7 @@ func (i *Instance) buildEnvSourceCommand() string {
 		if restartEnv := buildEnvExports(i.restartEnv); restartEnv != "" {
 			sources = append(sources, restartEnv)
 		}
-		if stripExpr := telegramStateDirStripExpr(i); stripExpr != "" {
-			sources = append(sources, stripExpr)
-		}
+		sources = append(sources, i.telegramStripSources()...)
 		if identityExport := i.identityEnvExport(); identityExport != "" {
 			sources = append(sources, identityExport)
 		}
@@ -159,9 +157,7 @@ func (i *Instance) buildEnvSourceCommand() string {
 	// runs even when no env_file is in play (covers `agent-deck
 	// launch` children outside the conductor's group triangle).
 	// Subsumes the narrower issue #680 predicate.
-	if stripExpr := telegramStateDirStripExpr(i); stripExpr != "" {
-		sources = append(sources, stripExpr)
-	}
+	sources = append(sources, i.telegramStripSources()...)
 
 	// 10. Identity injection (identity_injection.go): every tool, including
 	//     custom commands, gets AGENTDECK_IDENTITY_FILE pointing at the
@@ -781,6 +777,46 @@ func telegramStateDirStripExpr(inst *Instance) string {
 		}
 	}
 	return "unset " + strings.Join(telegramEnvVarsToStrip, " ")
+}
+
+// telegramStripSources returns the prelude clauses for step 9: the
+// TELEGRAM_* unset (when telegramStateDirStripExpr fires) preceded by a pane
+// warning when the session wrapper itself assigns TELEGRAM_STATE_DIR.
+//
+// The wrapper is deliberately NOT treated as a bot-ownership opt-in: forks
+// copy Wrapper (but not Channels), so honouring it would hand every fork of
+// such a session a second `bun telegram` poller on the same token — the 409
+// race S8/#1133 exists to prevent. Instead the strip still wins, but the
+// operator is told why the wrapper's value never reaches the agent rather
+// than it vanishing silently. Conductors, telegram channel owners and
+// --inherit-telegram-env sessions get no strip and therefore no warning.
+func (i *Instance) telegramStripSources() []string {
+	stripExpr := telegramStateDirStripExpr(i)
+	if stripExpr == "" {
+		return nil
+	}
+	if !i.wrapperSetsTelegramStateDir() {
+		return []string{stripExpr}
+	}
+	sessionLog.Warn("session wrapper TELEGRAM_STATE_DIR stripped for non-owning claude session",
+		slog.String("session", i.Title))
+	return []string{
+		paneWarning("wrapper TELEGRAM_STATE_DIR is unset for this session (not a conductor or telegram channel owner); use --channel plugin:telegram@... or --inherit-telegram-env"),
+		stripExpr,
+	}
+}
+
+// wrapperSetsTelegramStateDir reports whether the effective session wrapper
+// (instance or tool-level) assigns TELEGRAM_STATE_DIR. Same substring test
+// as the WRAPPER_DEPRECATED check in telegram_validator.go.
+func (i *Instance) wrapperSetsTelegramStateDir() bool {
+	wrapper := i.Wrapper
+	if wrapper == "" {
+		if toolDef := GetToolDef(i.Tool); toolDef != nil {
+			wrapper = toolDef.Wrapper
+		}
+	}
+	return strings.Contains(wrapper, "TELEGRAM_STATE_DIR=")
 }
 
 // telegramExecEnvStripFlags returns the `-u VAR -u VAR ...` argument
