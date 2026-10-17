@@ -21,6 +21,8 @@ import (
 	"strings"
 	"sync"
 	"unicode"
+
+	"github.com/asheshgoplani/agent-deck/internal/logging"
 )
 
 const toolDataConductorNameKey = "conductor_name"
@@ -166,16 +168,18 @@ func (i *Instance) warnConductorTitleDrift(name, title string) {
 		return
 	}
 	sessionLog.Warn("conductor_title_drift",
-		slog.String("session_id", i.ID),
-		slog.String("title", title),
-		slog.String("conductor", name),
+		slog.String("session_id", logging.SanitizeValue(i.ID)),
+		slog.String("title", logging.SanitizeValue(title)),
+		slog.String("conductor", logging.SanitizeValue(name)),
 		slog.String("detail", "title no longer matches the conductor name; settings still resolve by the stored name"))
 }
 
 // FindConductorInstance returns the session of the named conductor in
 // instances, or nil. A stored ConductorName wins; then the canonical title;
-// then a decorated title that parses to name. A session whose stored name is
-// a different conductor never matches by title.
+// then a decorated title that parses to name on a session flagged
+// IsConductor (a worker that merely carries a decorated conductor-shaped
+// title must not be taken over by setup or removed by teardown). A session
+// whose stored name is a different conductor never matches by title.
 func FindConductorInstance(instances []*Instance, name string) *Instance {
 	if name == "" {
 		return nil
@@ -195,7 +199,7 @@ func FindConductorInstance(instances []*Instance, name string) *Instance {
 		if instTitle == title {
 			return inst
 		}
-		if decorated == nil && ConductorNameFromTitle(instTitle) == name {
+		if decorated == nil && inst.IsConductor && ConductorNameFromTitle(instTitle) == name {
 			decorated = inst
 		}
 	}

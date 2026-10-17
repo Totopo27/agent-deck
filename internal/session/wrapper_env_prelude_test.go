@@ -288,3 +288,63 @@ func TestApplyWrapper_QuotedPlaceholderShape(t *testing.T) {
 		}
 	}
 }
+
+// TestWrapperEnvPrelude_ShellCommandFlagPlaceholder: an unquoted placeholder
+// right after a shell's -c option (bash -lc {command}) is that shell's
+// command string. Wrapping the compound launch line in a second bash -c made
+// the outer shell run a bare "bash" (the payload became its $0), so the
+// session opened an empty shell instead of the agent.
+func TestWrapperEnvPrelude_ShellCommandFlagPlaceholder(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		wrapper string
+		wantTG  bool
+		wantArg string
+	}{
+		{"bash -lc", `bash -lc {command}`, false, ""},
+		{"absolute bash -c", `/bin/bash -c {command}`, false, ""},
+		{"env prefix", `env TELEGRAM_STATE_DIR=%s bash -lc {command}`, true, ""},
+		{"split options", `bash -l -c {command}`, false, ""},
+		{"suffix flag", `bash -lc {command} --wrapper-flag`, false, "--wrapper-flag"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			inst, outFile, tgDir := wrapperPreludeFixture(t)
+			inst.Wrapper = strings.Replace(tc.wrapper, "%s", tgDir, 1)
+
+			line, got := runLaunchLine(t, inst, outFile)
+			if strings.Contains(line, "-c bash -c") || strings.Contains(line, "-lc bash -c") {
+				t.Errorf("shell -c placeholder got a second bash -c:\n  line: %s", line)
+			}
+			if tc.wantTG && !strings.Contains(got, "TG="+tgDir+"\n") {
+				t.Errorf("agent did not see the wrapper's TELEGRAM_STATE_DIR:\n  recorded: %q\n  line: %s", got, line)
+			}
+			if !strings.Contains(got, "PRELUDE=from-env-file\n") {
+				t.Errorf("agent did not see the env_file prelude var:\n  recorded: %q\n  line: %s", got, line)
+			}
+			if tc.wantArg != "" && !strings.Contains(got, tc.wantArg) {
+				t.Errorf("agent did not get the wrapper suffix %q:\n  recorded: %q\n  line: %s", tc.wantArg, got, line)
+			}
+		})
+	}
+}
+
+// TestPrefixEndsWithShellCommandFlag pins which prefixes count as a shell's
+// -c command string.
+func TestPrefixEndsWithShellCommandFlag(t *testing.T) {
+	for prefix, want := range map[string]bool{
+		"bash -lc ":           true,
+		"/bin/sh -c ":         true,
+		"env X=1 zsh -l -c ":  true,
+		"bash -c":             false, // placeholder glued to the option
+		"bash ":               false,
+		"env X=1 ":            false,
+		"ssh -c aes128 host ": false,
+		"nice -n 5 ":          false,
+		"python3 -c ":         false,
+		"bash --login ":       false,
+	} {
+		if got := prefixEndsWithShellCommandFlag(prefix); got != want {
+			t.Errorf("prefixEndsWithShellCommandFlag(%q) = %v, want %v", prefix, got, want)
+		}
+	}
+}

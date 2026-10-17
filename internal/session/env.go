@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/asheshgoplani/agent-deck/internal/logging"
 )
 
 // buildEnvSourceCommand builds shell commands to source .env files before the main command.
@@ -799,7 +801,7 @@ func (i *Instance) telegramStripSources() []string {
 		return []string{stripExpr}
 	}
 	sessionLog.Warn("session wrapper TELEGRAM_STATE_DIR stripped for non-owning claude session",
-		slog.String("session", i.Title))
+		slog.String("session", logging.SanitizeValue(i.Title)))
 	return []string{
 		paneWarning("wrapper TELEGRAM_STATE_DIR is unset for this session (not a conductor or telegram channel owner); use --channel plugin:telegram@... or --inherit-telegram-env"),
 		stripExpr,

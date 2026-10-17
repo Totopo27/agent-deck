@@ -36,7 +36,10 @@ func TestRegisterConductorSession_StoresStableName(t *testing.T) {
 
 	// Legacy record (no stored name) with a decorated title: reused and
 	// stamped so later renames keep resolving.
+	// Setup has flagged its rows IsConductor since #476; only a flagged row
+	// is matched by a decorated title.
 	legacy := session.NewInstanceWithGroupAndTool("🎙 conductor-ops", "/tmp", "conductor", spec.Agent)
+	legacy.IsConductor = true
 	got := []*session.Instance{legacy}
 	got, reused, existed := registerConductorSession(got, "ops", spec)
 	if !existed || reused != legacy || len(got) != 1 {
@@ -53,7 +56,7 @@ func TestRegisterConductorSession_StoresStableName(t *testing.T) {
 // title or ID match, "conductor-<name>" falls back to the conductor's
 // identity so a decorated or renamed conductor stays addressable.
 func TestResolveSession_ConductorTitleFallsBackToIdentity(t *testing.T) {
-	decorated := &session.Instance{ID: "aaaaaaaaaaaa1111", Title: "🎙 conductor-personal"}
+	decorated := &session.Instance{ID: "aaaaaaaaaaaa1111", Title: "🎙 conductor-personal", IsConductor: true}
 	renamed := &session.Instance{ID: "bbbbbbbbbbbb2222", Title: "my assistant", ConductorName: "ops"}
 	worker := &session.Instance{ID: "cccccccccccc3333", Title: "worker"}
 	instances := []*session.Instance{decorated, renamed, worker}

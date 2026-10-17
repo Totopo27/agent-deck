@@ -4990,20 +4990,32 @@ func (i *Instance) applyWrapper(command string) (string, error) {
 // substituted in place, escaped for that quote context; the argv form there
 // would break the wrapper's own quoting.
 //
+// An unquoted placeholder that is already a shell's command string (bash -lc
+// {command}, sh -c {command}) gets the command as that one quoted word,
+// without a second bash -c: wrapping it again made the outer shell run a bare
+// "bash" with the payload as its $0, opening an empty shell instead of the
+// agent, and a textual splice handed the shell only the first word.
+//
 // A wrapper that starts with {command}, or a plain single command, keeps the
 // textual substitution unchanged.
 func substituteWrapperCommand(wrapper, command string) string {
 	parts := strings.Split(wrapper, wrapperPlaceholder)
 	prefix := parts[0]
 	sub := command
-	if strings.TrimSpace(prefix) != "" && placeholderQuoteContext(prefix) == 0 && commandNeedsShell(command) {
-		payload := command
-		if strings.TrimSpace(strings.Join(parts[1:], "")) != "" {
-			payload += ` "$@"`
-		}
-		sub = "bash -c '" + strings.ReplaceAll(payload, "'", `'"'"'`) + "'"
-		if payload != command {
-			sub += " bash"
+	if strings.TrimSpace(prefix) != "" && placeholderQuoteContext(prefix) == 0 {
+		shellC := prefixEndsWithShellCommandFlag(prefix)
+		if shellC || commandNeedsShell(command) {
+			payload := command
+			if strings.TrimSpace(strings.Join(parts[1:], "")) != "" {
+				payload += ` "$@"`
+			}
+			sub = "'" + strings.ReplaceAll(payload, "'", `'"'"'`) + "'"
+			if !shellC {
+				sub = "bash -c " + sub
+			}
+			if payload != command {
+				sub += " bash"
+			}
 		}
 	}
 
@@ -5053,6 +5065,33 @@ func placeholderQuoteContext(prefix string) byte {
 		}
 	}
 	return quote
+}
+
+// wrapperShells are the shells whose -c option takes the next word as the
+// command string (prefixEndsWithShellCommandFlag).
+var wrapperShells = map[string]bool{"bash": true, "sh": true, "zsh": true, "dash": true, "ksh": true, "mksh": true, "ash": true}
+
+// prefixEndsWithShellCommandFlag reports whether the wrapper text before an
+// unquoted {command} ends with a shell invocation whose short options include
+// -c ("bash -lc ", "/bin/sh -c ", "zsh -l -c "), so the placeholder is that
+// shell's command string.
+func prefixEndsWithShellCommandFlag(prefix string) bool {
+	if prefix == "" || (prefix[len(prefix)-1] != ' ' && prefix[len(prefix)-1] != '\t') {
+		return false
+	}
+	fields := strings.Fields(prefix)
+	sawC := false
+	for n := len(fields) - 1; n >= 0; n-- {
+		f := fields[n]
+		if strings.HasPrefix(f, "-") && !strings.HasPrefix(f, "--") && len(f) > 1 {
+			if strings.Contains(f[1:], "c") {
+				sawC = true
+			}
+			continue
+		}
+		return sawC && wrapperShells[filepath.Base(f)]
+	}
+	return false
 }
 
 // commandNeedsShell reports whether command only works when parsed by a

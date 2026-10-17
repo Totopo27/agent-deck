@@ -236,9 +236,24 @@ func TestConductorIdentity_SQLiteRoundTrip(t *testing.T) {
 // then a decorated title for the same name.
 func TestFindConductorInstance(t *testing.T) {
 	other := &Instance{ID: "o", Title: "conductor-other"}
-	decorated := &Instance{ID: "d", Title: "🎙 conductor-personal"}
+	decorated := &Instance{ID: "d", Title: "🎙 conductor-personal", IsConductor: true}
 	if got := FindConductorInstance([]*Instance{other, decorated}, "personal"); got != decorated {
 		t.Fatalf("decorated title not found: %+v", got)
+	}
+	// An unflagged session with a decorated conductor-shaped title is a
+	// worker, not the conductor: setup must not take it over and teardown
+	// --remove must not delete it.
+	worker := &Instance{ID: "w", Title: "🎙 conductor-personal"}
+	if got := FindConductorInstance([]*Instance{other, worker}, "personal"); got != nil {
+		t.Fatalf("unflagged decorated worker matched as the conductor: %+v", got)
+	}
+	if got := FindConductorInstance([]*Instance{worker, decorated}, "personal"); got != decorated {
+		t.Fatalf("flagged decorated conductor should win over an unflagged worker: %+v", got)
+	}
+	// A legacy unflagged row with the exact canonical title still matches.
+	legacy := &Instance{ID: "l", Title: "conductor-personal"}
+	if got := FindConductorInstance([]*Instance{worker, legacy}, "personal"); got != legacy {
+		t.Fatalf("legacy canonical-title row not found: %+v", got)
 	}
 	renamed := &Instance{ID: "r", Title: "something else", ConductorName: "personal"}
 	plain := &Instance{ID: "p", Title: "conductor-personal"}
