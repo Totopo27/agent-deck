@@ -24,33 +24,60 @@ import (
 const maxBgWorkerAncestorHops = 3
 
 // hookFromClaudeBackgroundWorker reports whether this hook was fired by a
-// Claude background/supervisor worker: CLAUDE_JOB_DIR is set in its env, or
-// the nearest ancestor with a ~/.claude/sessions/<pid>.json record says
-// kind "bg".
+// Claude background/supervisor worker.
+//
+// The nearest ancestor with a ~/.claude/sessions/<pid>.json record that names
+// a kind is authoritative: kind "bg" drops the hook, any other kind (the
+// pane's own foreground Claude) credits it, even when CLAUDE_JOB_DIR is set.
+// CLAUDE_JOB_DIR alone can leak into a pane through its tmux server's
+// environment, and treating it as proof would drop every hook on that server.
+// It is only consulted when no such record is found (e.g. /proc is missing,
+// or the worker wrote none).
 func hookFromClaudeBackgroundWorker() bool {
-	if strings.TrimSpace(os.Getenv("CLAUDE_JOB_DIR")) != "" {
-		return true
+	if kind, ok := nearestClaudeAncestorKind(os.Getppid()); ok {
+		return kind == "bg"
 	}
+	return strings.TrimSpace(os.Getenv("CLAUDE_JOB_DIR")) != ""
+}
+
+// nearestClaudeAncestorKind walks up from pid (at most
+// maxBgWorkerAncestorHops processes) and returns the kind recorded in the first
+// ~/.claude/sessions/<pid>.json that carries one.
+func nearestClaudeAncestorKind(pid int) (string, bool) {
 	claudeDir := strings.TrimSpace(os.Getenv("CLAUDE_CONFIG_DIR"))
 	if claudeDir == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {
-			return false
+			return "", false
 		}
 		claudeDir = filepath.Join(home, ".claude")
 	}
-	pid := os.Getppid()
 	for hop := 0; hop < maxBgWorkerAncestorHops && pid > 1; hop++ {
 		data, err := os.ReadFile(filepath.Join(claudeDir, "sessions", strconv.Itoa(pid)+".json"))
 		if err == nil {
 			var rec struct {
 				Kind string `json:"kind"`
 			}
-			return json.Unmarshal(data, &rec) == nil && rec.Kind == "bg"
+			if json.Unmarshal(data, &rec) == nil && strings.TrimSpace(rec.Kind) != "" {
+				return strings.TrimSpace(rec.Kind), true
+			}
+			return "", false
 		}
 		pid = parentPIDOf(pid)
 	}
-	return false
+	return "", false
+}
+
+// scrubClaudeJobDirForCommand removes CLAUDE_JOB_DIR from this process's
+// environment before any tmux command can run (#2683), so a tmux server that
+// agent-deck starts from inside a Claude background job never carries it into
+// its panes. The hook handler keeps it: it is one of its bg-worker signals,
+// and every tmux exec it makes goes through the filtered tmux spawn env.
+func scrubClaudeJobDirForCommand(args []string) {
+	if len(args) > 0 && args[0] == "hook-handler" {
+		return
+	}
+	_ = os.Unsetenv("CLAUDE_JOB_DIR")
 }
 
 // parentPIDOf returns pid's parent via /proc, or 0 where /proc is absent

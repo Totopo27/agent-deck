@@ -363,6 +363,9 @@ func main() {
 
 	// Extract global -p/--profile flag before subcommand dispatch
 	profile, args := extractProfileFlag(os.Args[1:])
+	// #2683: scrub CLAUDE_JOB_DIR before anything can exec tmux, the same
+	// way TELEGRAM_* is scrubbed before a child launch.
+	scrubClaudeJobDirForCommand(args)
 	if len(args) > 0 && args[0] == "creds-refresh" {
 		printCredsRefreshRemoved()
 		return

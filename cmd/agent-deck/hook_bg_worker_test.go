@@ -90,3 +90,43 @@ func TestHookHandler_DropsHookFromBgKindPidFile(t *testing.T) {
 		t.Fatal("the dropped hook must leave a lifecycle reject line")
 	}
 }
+
+// Review follow-up on #2683: CLAUDE_JOB_DIR can leak into a pane through its
+// tmux server's environment. When the nearest Claude ancestor's sessions
+// record says it is a foreground (non-bg) process, that record wins and the
+// hook is credited.
+func TestHookHandler_ForegroundKindBeatsLeakedClaudeJobDir(t *testing.T) {
+	claudeDir := setupBgWorkerHookEnv(t)
+	t.Setenv("CLAUDE_JOB_DIR", t.TempDir())
+	sessionsDir := filepath.Join(claudeDir, "sessions")
+	if err := os.MkdirAll(sessionsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	pid := os.Getppid()
+	rec := fmt.Sprintf(`{"pid":%d,"sessionId":%q,"kind":"interactive"}`, pid, bgWorkerTestSession)
+	if err := os.WriteFile(filepath.Join(sessionsDir, fmt.Sprintf("%d.json", pid)), []byte(rec), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runBgWorkerHook(t)
+	if !hookStatusWritten(t) {
+		t.Fatal("a hook whose nearest Claude ancestor is a foreground process was dropped because CLAUDE_JOB_DIR leaked into the pane")
+	}
+	if lifecycleLogHasBgReject(t) {
+		t.Fatal("a credited foreground hook must not log a background-worker reject")
+	}
+}
+
+// The process-level scrub runs before any tmux exec for every command except
+// the hook handler, which reads CLAUDE_JOB_DIR as a bg-worker signal.
+func TestScrubClaudeJobDirForCommand(t *testing.T) {
+	t.Setenv("CLAUDE_JOB_DIR", "/tmp/jobs/abc")
+	scrubClaudeJobDirForCommand([]string{"hook-handler"})
+	if _, ok := os.LookupEnv("CLAUDE_JOB_DIR"); !ok {
+		t.Fatal("hook-handler must keep CLAUDE_JOB_DIR")
+	}
+	scrubClaudeJobDirForCommand([]string{"add", "."})
+	if _, ok := os.LookupEnv("CLAUDE_JOB_DIR"); ok {
+		t.Fatal("CLAUDE_JOB_DIR must be scrubbed before agent-deck can start a tmux server")
+	}
+	scrubClaudeJobDirForCommand(nil) // bare TUI launch: no panic, still scrubbed
+}

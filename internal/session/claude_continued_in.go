@@ -65,6 +65,15 @@ func (i *Instance) followClaudeContinuedIn() {
 	if cur == start {
 		return
 	}
+	if i.claudeSupersededIDs == nil {
+		i.claudeSupersededIDs = make(map[string]struct{}, len(seen))
+	}
+	for id := range seen {
+		if id != cur {
+			i.claudeSupersededIDs[id] = struct{}{}
+		}
+	}
+	delete(i.claudeSupersededIDs, cur)
 	i.ClaudeSessionID = cur
 	i.markClaudeSessionIDVerified()
 	i.ClaudeDetectedAt = time.Now()
@@ -82,6 +91,16 @@ func (i *Instance) followClaudeContinuedIn() {
 		slog.String("instance_id", logging.SanitizeValue(i.ID)),
 		slog.String("old_session_id", logging.SanitizeValue(start)),
 		slog.String("claude_session_id", logging.SanitizeValue(cur)))
+}
+
+// claudeIDSuperseded reports whether id is a predecessor this instance already
+// left behind by following a continued-in handoff.
+func (i *Instance) claudeIDSuperseded(id string) bool {
+	if id == "" || i.claudeSupersededIDs == nil {
+		return false
+	}
+	_, ok := i.claudeSupersededIDs[id]
+	return ok
 }
 
 // publishClaudeContinuedInRebind makes a continued-in rebind durable and

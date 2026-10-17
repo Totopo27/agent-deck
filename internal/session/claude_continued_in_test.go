@@ -161,3 +161,58 @@ func TestFollowClaudeContinuedIn_PersistsAndPublishesSuccessor(t *testing.T) {
 		t.Fatalf("pane CLAUDE_SESSION_ID = %q (err %v), want %q: a respawn would inherit the stalled id", got, err, newID)
 	}
 }
+
+// Review follow-up on #2683: after a continued-in rebind, a hook sample still
+// carrying the pre-handoff id (the status file is only refreshed when the
+// next hook fires) must not revert ClaudeSessionID via the hook fast path.
+func TestApplyHookSessionID_IgnoresSupersededContinuedInID(t *testing.T) {
+	projectPath, dir := setupContinuedInProject(t)
+	const (
+		oldID   = "66666666-6666-4666-8666-666666666666"
+		newID   = "77777777-7777-4777-8777-777777777777"
+		otherID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+	)
+	writeContinuedInTranscript(t, dir, oldID, newID)
+	writeContinuedInTranscript(t, dir, newID, "")
+
+	inst := NewInstance("handoff-stale-hook", projectPath)
+	inst.Tool = "claude"
+	inst.ClaudeSessionID = oldID
+	_ = inst.buildClaudeResumeCommand()
+	if inst.ClaudeSessionID != newID {
+		t.Fatalf("setup: continued-in must rebind to %s, got %q", newID, inst.ClaudeSessionID)
+	}
+
+	inst.hookSessionID = oldID
+	inst.applyHookSessionIDLocked()
+	if inst.ClaudeSessionID != newID {
+		t.Fatalf("a stale pre-handoff hook id reverted ClaudeSessionID to %q, want %q", inst.ClaudeSessionID, newID)
+	}
+
+	// A genuinely new id from a live hook is still adopted.
+	inst.hookSessionID = otherID
+	inst.applyHookSessionIDLocked()
+	if inst.ClaudeSessionID != otherID {
+		t.Fatalf("a fresh hook id must still rebind, got %q", inst.ClaudeSessionID)
+	}
+}
+
+// Review follow-up on #2683: a tmux server that already carries
+// CLAUDE_JOB_DIR in its global environment hands it to every pane. The spawn
+// command itself must unset it for every hook-emitting tool, or the hook
+// handler drops every hook from that pane.
+func TestBuildEnvSourceCommand_UnsetsClaudeJobDir(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	ClearUserConfigCache()
+	t.Cleanup(ClearUserConfigCache)
+	for _, tool := range []string{"claude", "codex"} {
+		inst := &Instance{ID: "jobdir-" + tool, Title: "jobdir", Tool: tool, ProjectPath: t.TempDir()}
+		if got := inst.buildEnvSourceCommand(); !strings.Contains(got, "unset CLAUDE_JOB_DIR") {
+			t.Errorf("%s spawn env %q must unset CLAUDE_JOB_DIR", tool, got)
+		}
+	}
+	plain := &Instance{ID: "jobdir-shell", Title: "jobdir", Tool: "shell", ProjectPath: t.TempDir()}
+	if got := plain.buildEnvSourceCommand(); strings.Contains(got, "CLAUDE_JOB_DIR") {
+		t.Errorf("a plain shell pane must be left alone, got %q", got)
+	}
+}

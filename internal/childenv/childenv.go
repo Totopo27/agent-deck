@@ -24,10 +24,17 @@ import (
 const (
 	claudeConfigDirPrefix = "CLAUDE_CONFIG_DIR="
 	// claudeJobDirPrefix marks a process started inside a Claude Code
-	// background job (agent view). A tmux server or worker started from such
-	// a job would otherwise hand it to every pane it spawns, and the hook
-	// handler treats it as "this hook came from a background worker" (#2683).
+	// background job (agent view). The hook handler treats it as "this hook
+	// came from a background worker" (#2683), so no child agent-deck spawns
+	// may inherit it. FilterEnv covers claude workers and MCP servers; the
+	// tmux spawn path does not go through FilterEnv (it must keep the
+	// conductor's TELEGRAM_* / CLAUDE_CONFIG_DIR semantics) and uses
+	// WithoutClaudeJobDir instead, plus a process-level unset at agent-deck
+	// startup and an explicit unset in the claude pane spawn command.
 	claudeJobDirPrefix = "CLAUDE_JOB_DIR="
+
+	// ClaudeJobDirVar is the env var name behind claudeJobDirPrefix.
+	ClaudeJobDirVar = "CLAUDE_JOB_DIR"
 )
 
 // FilterEnv returns env with every TELEGRAM_* var, any inherited
@@ -51,6 +58,28 @@ func FilterEnv(env []string, childConfigDir string) []string {
 	}
 	if childConfigDir != "" {
 		out = append(out, claudeConfigDirPrefix+childConfigDir)
+	}
+	return out
+}
+
+// WithoutClaudeJobDir returns the env for a tmux client/server spawn: the
+// current process environment minus CLAUDE_JOB_DIR (#2683). A tmux server
+// first started from inside a Claude Code background job would otherwise put
+// that marker into its global environment and hand it to every pane, and the
+// hook handler would then drop every hook on that server. Returns nil (inherit
+// unchanged, exec.Cmd's default) when the variable is absent, so the common
+// path keeps the exact pre-#2683 behaviour.
+func WithoutClaudeJobDir() []string {
+	if _, ok := os.LookupEnv(ClaudeJobDirVar); !ok {
+		return nil
+	}
+	env := os.Environ()
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		if strings.HasPrefix(kv, claudeJobDirPrefix) {
+			continue
+		}
+		out = append(out, kv)
 	}
 	return out
 }
