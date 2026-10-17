@@ -169,7 +169,7 @@ type UserConfig struct {
 	GroupDefaults GroupDefaultsSettings `toml:"group_defaults,omitempty"`
 
 	// Conductors defines optional per-conductor overrides.
-	// Keyed by conductor name (matches Instance.Title minus "conductor-" prefix).
+	// Keyed by conductor name (Instance.ResolveConductorName).
 	// Mirrors Groups — see ConductorOverrides for the sub-table shape.
 	// Closes issue #602.
 	// Example:
@@ -1314,8 +1314,8 @@ type GroupDeepSeekSettings struct {
 
 // ConductorOverrides defines per-conductor configuration overrides.
 // Mirrors GroupSettings — conductors are first-class entities keyed by
-// conductor name (derived from Instance.Title via strings.TrimPrefix at the
-// call site, same pattern as env.go getConductorEnv).
+// conductor name (Instance.ResolveConductorName: the stored stable name, else
+// the possibly decorated conductor-<name> title).
 //
 // Named ConductorOverrides (not ConductorSettings) to avoid collision with
 // the pre-existing global [conductor] meta-agent orchestration block
@@ -2353,9 +2353,8 @@ func (c *UserConfig) GetGroupHermesEnvFile(groupPath string) string {
 }
 
 // GetConductorClaudeConfigDir returns the conductor-specific Claude config
-// directory, if configured. Keyed by conductor name (Instance.Title minus
-// "conductor-" prefix — single source of truth is conductorNameFromInstance
-// in claude.go). Path expansion matches GetGroupClaudeConfigDir. Returns ""
+// directory, if configured. Keyed by conductor name (single source of truth
+// is Instance.ResolveConductorName in conductor_identity.go). Path expansion matches GetGroupClaudeConfigDir. Returns ""
 // when the conductor has no block or no config_dir — callers fall through
 // to the group/profile/global chain.
 func (c *UserConfig) GetConductorClaudeConfigDir(name string) string {

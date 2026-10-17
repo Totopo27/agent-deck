@@ -155,6 +155,14 @@ type Instance struct {
 	IsConductor        bool    `json:"is_conductor,omitempty"`         // True if this session is a conductor orchestrator
 	NoTransitionNotify bool    `json:"no_transition_notify,omitempty"` // Suppress transition event dispatch for this session
 
+	// ConductorName is the stable conductor key ([conductors.<name>],
+	// meta.json), stamped by `conductor setup` and persisted in the tool_data
+	// extras zone. The title is display-only and may be decorated or renamed.
+	// Read it via ResolveConductorName (conductor_identity.go), which also
+	// covers old records through the title fallback.
+	ConductorName   string     `json:"conductor_name,omitempty"`
+	conductorNameMu sync.Mutex // guards ConductorName against the lazy fill
+
 	// TitleLocked, when true, blocks Claude's session name from syncing into
 	// the agent-deck Title (issue #697). Conductors launch workers with a
 	// semantic title (e.g. "SCRUM-351") that Claude would otherwise overwrite

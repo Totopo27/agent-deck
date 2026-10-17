@@ -335,8 +335,10 @@ func isTerminalAttentionStatus(status string) bool {
 	return s == string(StatusWaiting) || s == string(StatusError) || s == string(StatusIdle)
 }
 
-func isConductorSessionTitle(title string) bool {
-	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(title)), "conductor-")
+// isConductorSession reports whether inst is a conductor by its resolved
+// identity (stored name, else a possibly decorated conductor-* title).
+func isConductorSession(inst *Instance) bool {
+	return inst.ResolveConductorName() != ""
 }
 
 // isSelfSuppressedConductor reports whether inst is a top-level conductor: no
@@ -349,7 +351,7 @@ func isSelfSuppressedConductor(inst *Instance) bool {
 		return false
 	}
 	parent := strings.TrimSpace(inst.ParentSessionID)
-	return (parent == "" || parent == inst.ID) && isConductorSessionTitle(inst.Title)
+	return (parent == "" || parent == inst.ID) && isConductorSession(inst)
 }
 
 // instanceAcceptsTransitionEvents is the centralized per-session predicate used

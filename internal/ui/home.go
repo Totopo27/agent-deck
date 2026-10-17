@@ -6583,7 +6583,7 @@ func (h *Home) backgroundStatusUpdate() {
 		}
 		if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil {
 			h.clearOnCompactSent[inst.ID] = time.Now()
-			conductorName := strings.TrimPrefix(inst.Title, "conductor-")
+			conductorName := conductorDisplayName(inst)
 			safego.Go(uiLog, "conductor_clear_and_heartbeat", func() {
 				time.Sleep(500 * time.Millisecond)
 				msg := fmt.Sprintf("Heartbeat: Check sessions in your group (%s). List any that are waiting, auto-respond where safe, and report what needs my attention.", conductorName)
@@ -13972,13 +13972,14 @@ func (h *Home) stopConductorDeliveries(wait time.Duration) (undelivered, dropped
 // look it up off the UI goroutine while Update may rewrite h.instances, so the
 // lookup holds the read lock for the whole scan.
 func (h *Home) conductorTmuxSession(conductorName string) *tmux.Session {
-	sessionTitle := session.ConductorSessionTitle(conductorName)
 	h.instancesMu.RLock()
 	defer h.instancesMu.RUnlock()
 	for _, inst := range h.instances {
 		// Title is written under the instance's own lock (SetTitleThreadSafe,
-		// renames and title sync), not instancesMu.
-		if inst.GetTitleThreadSafe() != sessionTitle {
+		// renames and title sync), not instancesMu. The stored conductor name
+		// wins over the title, so a decorated or renamed conductor still
+		// receives its deliveries.
+		if !inst.IsConductorNamed(conductorName, inst.GetTitleThreadSafe()) {
 			continue
 		}
 		if ts := inst.GetTmuxSession(); ts != nil && ts.Name != "" {
@@ -17215,7 +17216,7 @@ func switchSourceSnapshotFromInstances(inst *session.Instance, instances []*sess
 				managementUnknown = true
 			} else {
 				for _, client := range clients {
-					if client.Conductor == inst.ID || client.Conductor == inst.Title || session.ConductorSessionTitle(client.Conductor) == inst.Title {
+					if client.Conductor == inst.ID || client.Conductor == inst.Title || session.ConductorSessionTitle(client.Conductor) == inst.Title || inst.IsConductorNamed(client.Conductor, inst.Title) {
 						watcherTarget = true
 						break
 					}

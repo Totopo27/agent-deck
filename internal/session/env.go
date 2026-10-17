@@ -657,11 +657,12 @@ func (i *Instance) getToolEnvFile() string {
 }
 
 // getConductorEnv returns shell export commands for conductor-specific env vars.
-// Checks if this session is a conductor (title starts with "conductor-") and loads
-// env and env_file from the conductor's meta.json.
+// Checks if this session is a conductor (ResolveConductorName: stored name, or
+// a possibly decorated "conductor-<name>" title) and loads env and env_file
+// from the conductor's meta.json.
 func (i *Instance) getConductorEnv(ignoreMissing bool) string {
-	name := strings.TrimPrefix(i.Title, "conductor-")
-	if name == "" || name == i.Title {
+	name := i.ResolveConductorName()
+	if name == "" {
 		return "" // not a conductor session
 	}
 	meta, err := LoadConductorMeta(name)
@@ -750,8 +751,8 @@ var telegramEnvVarsToStrip = []string{
 //     "claude <subcommand> ..." through Tool="shell" to skip agent-deck's
 //     own flag injection, but the spawned binary is still claude) — see
 //     instInvokesClaudeBinary.
-//  2. Title does NOT start with "conductor-". Conductors are the
-//     legitimate bot owners even before `Channels` is set.
+//  2. The instance does not resolve to a conductor (ResolveConductorName).
+//     Conductors are the legitimate bot owners even before `Channels` is set.
 //  3. No entry in `Channels` carries the `plugin:telegram@` prefix.
 //     Explicit per-session telegram opt-in keeps the variables.
 //  4. InheritTelegramEnv is false. The #1133 escape hatch.

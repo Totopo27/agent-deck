@@ -710,7 +710,7 @@ func (d *TransitionDaemon) wakeForInfoDigests(profile string, byID map[string]*I
 		if parent == nil {
 			continue
 		}
-		cfg := ResolveInboxConfig(parent.Title)
+		cfg := ResolveInboxConfigForInstance(parent)
 		window := time.Duration(cfg.GetInfoDigestMinutes()) * time.Minute
 		due, records, children := DigestDue(parentID, window, now)
 		if !due {

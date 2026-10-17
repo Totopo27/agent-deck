@@ -3328,7 +3328,7 @@ func (d *NewDialog) View() string {
 		items := make([]conductorItem, 0, len(d.conductorSessions)+1)
 		items = append(items, conductorItem{label: "None", idx: 0})
 		for i, inst := range d.conductorSessions {
-			name := strings.TrimPrefix(inst.Title, "conductor-")
+			name := conductorDisplayName(inst)
 			shortPath := inst.ProjectPath
 			if home, err := os.UserHomeDir(); err == nil {
 				shortPath = strings.Replace(shortPath, home, "~", 1)

@@ -47,6 +47,9 @@ type InstanceData struct {
 	IsConductor        bool   `json:"is_conductor,omitempty"`         // True if this session is a conductor orchestrator
 	NoTransitionNotify bool   `json:"no_transition_notify,omitempty"` // Suppress transition event dispatch
 	TitleLocked        bool   `json:"title_locked,omitempty"`         // #697: block Claude session-name sync into Title
+	// ConductorName mirrors Instance.ConductorName, the stable conductor key.
+	// Lives in the tool_data extras zone (conductor_identity.go).
+	ConductorName string `json:"conductor_name,omitempty"`
 	// SubcommandPassthrough mirrors Instance.SubcommandPassthrough (#1821).
 	// Persisted via the tool_data extras zone (see
 	// WriteSubcommandPassthroughToToolData), not a dedicated SQL column, so
@@ -1091,6 +1094,9 @@ func instanceToRow(inst *Instance) (*statedb.InstanceRow, error) {
 	// Identity-injection opt-out lives in the same extras zone so a restart
 	// from any process honours `--no-identity`.
 	toolData = WriteIdentityInjectionDisabledToToolData(toolData, inst.IdentityInjectionDisabled)
+	// Stable conductor identity (conductor_identity.go). Never cleared, so an
+	// empty value leaves the stored key to MergeToolDataExtras.
+	toolData = WriteConductorNameToToolData(toolData, inst.storedConductorName())
 	// #2260: the per-session context-level override lives in the same extras
 	// zone so a restart from any process honours `session set ... context-level`.
 	toolData = WriteContextLevelToToolData(toolData, inst.ContextLevel)
@@ -1303,6 +1309,7 @@ func (s *Storage) LoadLite() ([]*InstanceData, []*GroupData, error) {
 			SubcommandPassthrough:     ReadSubcommandPassthroughFromToolData(r.ToolData),
 			TrackCommandExit:          readTrackCommandExitFromToolData(r.ToolData),
 			IdentityInjectionDisabled: ReadIdentityInjectionDisabledFromToolData(r.ToolData),
+			ConductorName:             ReadConductorNameFromToolData(r.ToolData),
 			ContextLevel:              ReadContextLevelFromToolData(r.ToolData),
 			PromptSuggestions:         ReadPromptSuggestionsFromToolData(r.ToolData),
 			ClaudeSessionIDUnverified: ReadClaudeSessionUnverifiedFromToolData(r.ToolData),
@@ -1444,6 +1451,7 @@ func (s *Storage) LoadWithGroupsSnapshot() ([]*Instance, []*GroupData, *statedb.
 			SubcommandPassthrough:     ReadSubcommandPassthroughFromToolData(r.ToolData),
 			TrackCommandExit:          readTrackCommandExitFromToolData(r.ToolData),
 			IdentityInjectionDisabled: ReadIdentityInjectionDisabledFromToolData(r.ToolData),
+			ConductorName:             ReadConductorNameFromToolData(r.ToolData),
 			ContextLevel:              ReadContextLevelFromToolData(r.ToolData),
 			PromptSuggestions:         ReadPromptSuggestionsFromToolData(r.ToolData),
 			ClaudeSessionIDUnverified: ReadClaudeSessionUnverifiedFromToolData(r.ToolData),
@@ -1755,6 +1763,7 @@ func (s *Storage) convertToInstances(data *StorageData) ([]*Instance, []*GroupDa
 			SubcommandPassthrough:        instData.SubcommandPassthrough,
 			TrackCommandExit:             instData.TrackCommandExit,
 			IdentityInjectionDisabled:    instData.IdentityInjectionDisabled,
+			ConductorName:                instData.ConductorName,
 			ContextLevel:                 instData.ContextLevel,
 			PromptSuggestions:            instData.PromptSuggestions,
 			LastStartedAt:                instData.LastStartedAt,

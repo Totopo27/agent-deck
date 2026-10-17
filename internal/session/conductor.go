@@ -465,14 +465,14 @@ func (m *ConductorMeta) GetClearOnCompact() bool {
 }
 
 // ConductorClearOnCompact checks if this conductor instance has clear_on_compact enabled.
-// Extracts the conductor name from the session title ("conductor-{NAME}"),
-// loads meta.json, and returns the setting (defaults to true).
-// Returns false if the title doesn't match conductor format, since the caller
-// should not enable clear-on-compact for non-conductor sessions.
+// Resolves the conductor name (ResolveConductorName), loads meta.json, and
+// returns the setting (defaults to true).
+// Returns false for a non-conductor session, since the caller should not
+// enable clear-on-compact there.
 func (i *Instance) ConductorClearOnCompact() bool {
-	name := strings.TrimPrefix(i.Title, "conductor-")
-	if name == "" || name == i.Title {
-		return false // not a conductor-prefixed title: don't enable
+	name := i.ResolveConductorName()
+	if name == "" {
+		return false // not a conductor session: don't enable
 	}
 	meta, err := LoadConductorMeta(name)
 	if err != nil {

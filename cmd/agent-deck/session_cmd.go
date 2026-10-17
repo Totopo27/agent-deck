@@ -4088,8 +4088,8 @@ func shouldSkipConductorHeartbeatSend(inst *session.Instance, message string) bo
 	if inst == nil || !session.IsConductorHeartbeatMessage(message) {
 		return false
 	}
-	name := strings.TrimPrefix(inst.Title, session.ConductorSessionTitlePrefix)
-	if name == inst.Title || name == "" {
+	name := inst.ResolveConductorName()
+	if name == "" {
 		return false
 	}
 	meta, err := session.LoadConductorMeta(name)

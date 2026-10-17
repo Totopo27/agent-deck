@@ -365,8 +365,21 @@ var inboxConfigOverride *InboxConfig
 
 // ResolveInboxConfig returns the [inbox] settings for a parent, with the
 // conductor's [conductors.<name>.inbox] override applied when the parent title
-// is conductor-<name>. A missing config yields the defaults.
+// is (a possibly decorated) conductor-<name>. A missing config yields the
+// defaults. Prefer ResolveInboxConfigForInstance when the parent instance is
+// at hand: it also follows a renamed conductor's stored name.
 func ResolveInboxConfig(parentTitle string) InboxConfig {
+	return resolveInboxConfigForConductor(ConductorNameFromTitle(parentTitle))
+}
+
+// ResolveInboxConfigForInstance is ResolveInboxConfig keyed by the parent's
+// resolved conductor name (ResolveConductorName). A nil parent yields the
+// global [inbox] settings.
+func ResolveInboxConfigForInstance(parent *Instance) InboxConfig {
+	return resolveInboxConfigForConductor(parent.ResolveConductorName())
+}
+
+func resolveInboxConfigForConductor(name string) InboxConfig {
 	if inboxConfigOverride != nil {
 		return *inboxConfigOverride
 	}
@@ -375,11 +388,16 @@ func ResolveInboxConfig(parentTitle string) InboxConfig {
 		return InboxConfig{}
 	}
 	out := cfg.Inbox
-	title := strings.ToLower(strings.TrimSpace(parentTitle))
-	if name, ok := strings.CutPrefix(title, "conductor-"); ok && cfg.Conductors != nil {
-		if c, ok := cfg.Conductors[name]; ok {
-			out = out.merged(c.Inbox)
-		}
+	if name == "" || cfg.Conductors == nil {
+		return out
+	}
+	c, ok := cfg.Conductors[name]
+	if !ok {
+		// Historical lookup lowercased the title; keep matching that way.
+		c, ok = cfg.Conductors[strings.ToLower(name)]
+	}
+	if ok {
+		out = out.merged(c.Inbox)
 	}
 	return out
 }
