@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `session switch-account` works when both accounts' `projects` directories point to the same transcript store: the conversation is already there, so nothing is copied, staged or archived, and the switch fails safely if the store is rebound while it runs. `session set ... account` no longer prints a needless migration warning in that setup. Accounts with separate stores keep the existing checks (#2648, thanks @jaideeppyne, reported by @bautrey).
 - A launch with `-p <profile>` from inside a session of another profile no longer runs on the caller's Claude account: the inherited `AGENTDECK_ACCOUNT`, `CLAUDE_CONFIG_DIR` and `CLAUDE_SECURESTORAGE_CONFIG_DIR` are dropped when `-p` differs from the caller's profile, so the new session uses the target profile's Claude directory. `--account` still wins, same-profile launches are unchanged, and status line wrappers keep the original environment and account attribution (#2650, thanks @jaideeppyne, reported by @godlen4332).
 - A Codex session that shows Working with collapsed queued questions above the input box (`? 1 question`) reads as running instead of idle, and sends treat it as busy. Queued questions without a live turn still read as idle (#2666, #2667, thanks @007hacky007).
+- `session archive <id> --expected-parent <parent-id> --expected-content-version <version>` archives a worker only when it is still the same finished turn: the session must have that parent, be waiting, and its transcript must still have the `content_version` from `session output --json`. A Codex worker's latest turn must be the completed reply with no unsent submission left over, and a Claude worker's last reply must end with a done sentinel. Otherwise it refuses with exit 1 and stops nothing, so automatic cleanup no longer kills a turn that started after the check. Both flags are needed together, and other tools are refused. `session archive` without them is unchanged (#2643, thanks @arnzchen).
 
 ### Comms
 
@@ -35,6 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - MCP proxy clients (`mcp-proxy`) exit when their stdin closes or their parent process exits, instead of reconnecting in a loop and staying behind as orphans. A backend disconnect with a live client still reconnects, and a request already partly sent is not replayed. The shared pool is unchanged (#2662, thanks @jaideeppyne, reported by @godlen4332).
 - `conductor setup` on Linux creates the notifier and bridge log directories (owner-only for new ones) before it enables the systemd units, so the transition notifier no longer crash-loops with `209/STDOUT` on a fresh account. A log path that cannot be created fails setup before any service starts (#2646, #2654, thanks @jaideeppyne, reported by @tsblack).
 - Web: opening a `/s/<id>` link after using Fleet shows that session's terminal instead of leaving Fleet on top. Skills and MCPs stay open if you were on them, and this also works with browser back and forward (#2679, #2684, thanks @littleKitchen, reported by @bautrey).
+- Web: the New Session dialog offers to create a working directory that does not exist yet, instead of failing with an error. It lists the folders it would create, and creates them only when you tick "Create this folder". Editing the path clears the tick, and if the list of missing folders changes before you submit, the dialog asks again. No git repository is set up (#2658, #2660, thanks @007hacky007).
 
 ### Upgrading
 
@@ -45,7 +47,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Cross-profile launches: `agent-deck -p <other> launch` from inside a session now uses the other profile's Claude account. Pass `--account` to pick an account on purpose.
 - pi: run `agent-deck pi-hooks install` on each host (remotes included) to get the v3 extension; `pi-hooks status` reports v2 installs as outdated, and a v2 extension adds no pi records to the Comms Ledger.
 
-Thanks to @jaideeppyne, @koenzhao, @siraben, @007hacky007, @littleKitchen and @fpmx3bp for their pull requests, and to @godlen4332, @bautrey and @tsblack for their reports.
+Thanks to @jaideeppyne, @koenzhao, @siraben, @007hacky007, @littleKitchen, @fpmx3bp and @arnzchen for their pull requests, and to @godlen4332, @bautrey and @tsblack for their reports.
 
 ## [1.16.28] - 2026-10-10
 
