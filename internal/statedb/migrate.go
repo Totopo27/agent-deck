@@ -117,6 +117,10 @@ type toolDataBlob struct {
 	// (internal/session/prompt_suggestions.go), listed for the same reason as
 	// ContextLevel: clearing it must not be undone by MergeToolDataExtras.
 	PromptSuggestions string `json:"prompt_suggestions,omitempty"`
+	// IntendedSwitch is the per-session intended account/model switch record
+	// (internal/session/intended_switch.go), listed for the same reason as
+	// ContextLevel: clearing it must not be undone by MergeToolDataExtras.
+	IntendedSwitch json.RawMessage `json:"intended_switch,omitempty"`
 }
 
 // multiRepoWorktreeBlob is the JSON representation of a multi-repo worktree in tool_data.

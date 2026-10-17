@@ -495,6 +495,14 @@ type Instance struct {
 	// clears).
 	PromptSuggestions string `json:"prompt_suggestions,omitempty"`
 
+	// IntendedSwitch marks the current account/model as switched on purpose,
+	// until its ExpiresAt (limit-guard reads it from list/show --json). Nil
+	// when unset. Persisted in the tool_data extras zone (intended_switch.go).
+	// CLI: `session set <id> account|model <v> --intended "<reason>"`, or
+	// `session set <id> intended-switch "<reason>"` ("" clears). Any other
+	// account or model change clears it.
+	IntendedSwitch *IntendedSwitch `json:"intended_switch,omitempty"`
+
 	// PluginChannelLinkDisabled opts the session out of the catalog-driven
 	// auto-link between Plugins and Channels (RFC §4.7). When true, an
 	// `--plugin foo` whose catalog entry has EmitsChannel=true does NOT

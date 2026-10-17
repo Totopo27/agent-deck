@@ -3075,6 +3075,9 @@ func buildListJSON(profileName string, instances []*session.Instance, cachedStat
 		// background-work (issue #2473): kind, task, step/steps, elapsed,
 		// source. Omitted when nothing is in flight.
 		BackgroundWork *tmux.BackgroundWork `json:"background_work,omitempty"`
+
+		// IntendedSwitch: see core.SessionRow (omitted when none or expired).
+		IntendedSwitch *session.IntendedSwitchJSON `json:"intended_switch,omitempty"`
 	}
 	sessions := make([]sessionJSON, len(instances))
 	transcripts := session.ListedTranscriptPaths(instances)
@@ -3127,6 +3130,7 @@ func buildListJSON(profileName string, instances []*session.Instance, cachedStat
 			TranscriptPath:    transcripts[inst],
 			ResolvedCodexHome: inst.ResolvedCodexHome(),
 			LastActivityAt:    inst.DisplayLastActivityTime().Format(time.RFC3339Nano),
+			IntendedSwitch:    inst.ActiveIntendedSwitchJSON(time.Now()),
 		}
 		if cached[inst] {
 			sj.StatusSource = "cached"

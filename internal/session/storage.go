@@ -194,6 +194,10 @@ type InstanceData struct {
 	// zone, prompt_suggestions.go).
 	PromptSuggestions string `json:"prompt_suggestions,omitempty"`
 
+	// IntendedSwitch mirrors Instance.IntendedSwitch (tool_data extras zone,
+	// intended_switch.go).
+	IntendedSwitch *IntendedSwitch `json:"intended_switch,omitempty"`
+
 	// DeepSeekTask mirrors Instance.DeepSeekTask (PR #1942 review, P1c).
 	// Persisted via the tool_data extras zone (see deepseek_task_persist.go).
 	// Empty for every profile but headless.
@@ -1095,6 +1099,7 @@ func instanceToRow(inst *Instance) (*statedb.InstanceRow, error) {
 	// zone so a restart from any process honours `session set ... context-level`.
 	toolData = WriteContextLevelToToolData(toolData, inst.ContextLevel)
 	toolData = WritePromptSuggestionsToToolData(toolData, inst.PromptSuggestions)
+	toolData = WriteIntendedSwitchToToolData(toolData, inst.IntendedSwitch)
 	// #1815: the resume-identity taint travels with the id it describes, so a
 	// writer that saves a discovered conversation id without ever passing
 	// through the resume builder (e.g. `switch-account --no-restart`) cannot
@@ -1305,6 +1310,7 @@ func (s *Storage) LoadLite() ([]*InstanceData, []*GroupData, error) {
 			IdentityInjectionDisabled: ReadIdentityInjectionDisabledFromToolData(r.ToolData),
 			ContextLevel:              ReadContextLevelFromToolData(r.ToolData),
 			PromptSuggestions:         ReadPromptSuggestionsFromToolData(r.ToolData),
+			IntendedSwitch:            ReadIntendedSwitchFromToolData(r.ToolData),
 			ClaudeSessionIDUnverified: ReadClaudeSessionUnverifiedFromToolData(r.ToolData),
 			LastStartedAt:             ReadLastStartedAtFromToolData(r.ToolData),
 			GenericSessionID:          ReadGenericSessionIDFromToolData(r.ToolData),
@@ -1446,6 +1452,7 @@ func (s *Storage) LoadWithGroupsSnapshot() ([]*Instance, []*GroupData, *statedb.
 			IdentityInjectionDisabled: ReadIdentityInjectionDisabledFromToolData(r.ToolData),
 			ContextLevel:              ReadContextLevelFromToolData(r.ToolData),
 			PromptSuggestions:         ReadPromptSuggestionsFromToolData(r.ToolData),
+			IntendedSwitch:            ReadIntendedSwitchFromToolData(r.ToolData),
 			ClaudeSessionIDUnverified: ReadClaudeSessionUnverifiedFromToolData(r.ToolData),
 			LastStartedAt:             ReadLastStartedAtFromToolData(r.ToolData),
 			GenericSessionID:          ReadGenericSessionIDFromToolData(r.ToolData),
@@ -1757,6 +1764,7 @@ func (s *Storage) convertToInstances(data *StorageData) ([]*Instance, []*GroupDa
 			IdentityInjectionDisabled:    instData.IdentityInjectionDisabled,
 			ContextLevel:                 instData.ContextLevel,
 			PromptSuggestions:            instData.PromptSuggestions,
+			IntendedSwitch:               instData.IntendedSwitch,
 			LastStartedAt:                instData.LastStartedAt,
 			GenericSessionID:             instData.GenericSessionID,
 			GenericDetectedAt:            instData.GenericDetectedAt,
