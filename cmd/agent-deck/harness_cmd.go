@@ -349,6 +349,14 @@ type limitAccountJSON struct {
 	// Default marks the active default Claude login (~/.claude or the
 	// resolved CLAUDE_CONFIG_DIR) that no [profiles.<name>.claude] slot owns.
 	Default bool `json:"default,omitempty"`
+	// Blocked marks a Claude account a live session reports account-blocked
+	// (the organization disabled subscription access): not a limit that
+	// resets, so its sessions must move (limit-guard bug 2).
+	Blocked       bool   `json:"blocked,omitempty"`
+	BlockedReason string `json:"blocked_reason,omitempty"`
+	// Sessions lists the live sessions on this account that are
+	// account-blocked, model-limited or usage-limited, each with its fix.
+	Sessions []limitSessionJSON `json:"sessions,omitempty"`
 }
 
 func epochRFC3339(sec *int64) string {
@@ -570,7 +578,7 @@ func limitReachedFrom(groups [][]limitAccountJSON) map[string]bool {
 	return out
 }
 
-func handleLimits(args []string) {
+func handleLimits(profile string, args []string) {
 	fs := flag.NewFlagSet("limits", flag.ContinueOnError)
 	fs.SetOutput(os.Stdout)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
@@ -582,7 +590,10 @@ func handleLimits(args []string) {
 		fmt.Println("statusLine ingester fills (`agent-deck hooks install` wires it), and Codex")
 		fmt.Println("weekly/5h windows per CODEX_HOME (from the newest token_count frame in its rollouts),")
 		fmt.Println("each with used_pct and resets_at; \"expired\": true marks a window whose resets_at")
-		fmt.Println("has passed, so its used_pct no longer applies. Needs [macapp] plugins = true (docs/macapp-core.md).")
+		fmt.Println("has passed, so its used_pct no longer applies. A Claude account a live session reports")
+		fmt.Println("account-blocked (organization disabled access) carries \"blocked\": true and \"blocked_reason\";")
+		fmt.Println("\"sessions\" lists the account's account-blocked, model-limit and usage-limit sessions,")
+		fmt.Println("each with the command that moves it on (\"fix\"). Needs [macapp] plugins = true (docs/macapp-core.md).")
 	}
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -597,7 +608,8 @@ func handleLimits(args []string) {
 		exitCLI(2)
 	}
 	now := time.Now()
-	accounts := append(claudeLimits(cfg, now), codexLimits(cfg, now)...)
+	claude := annotateClaudeLimits(claudeLimits(cfg, now), liveClaudeSessionRows(profile))
+	accounts := append(claude, codexLimits(cfg, now)...)
 	if accounts == nil {
 		accounts = []limitAccountJSON{}
 	}
@@ -614,5 +626,8 @@ func handleLimits(args []string) {
 			parts = append(parts, a.Error)
 		}
 		fmt.Printf("%-7s %-12s %s\n", a.Harness, a.Name, strings.Join(parts, "  "))
+		for _, line := range limitsTextNotes(a) {
+			fmt.Println(line)
+		}
 	}
 }

@@ -536,7 +536,7 @@ func main() {
 			handleHarness(profile, args[1:])
 			return
 		case "limits":
-			handleLimits(args[1:])
+			handleLimits(profile, args[1:])
 			return
 		case "conductor":
 			handleConductor(profile, args[1:])
