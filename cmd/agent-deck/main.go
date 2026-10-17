@@ -3043,7 +3043,7 @@ func buildListJSON(profileName string, instances []*session.Instance, cachedStat
 		StatusSource      string    `json:"status_source,omitempty"`
 		Substate          string    `json:"substate,omitempty"` // Honest Status v2: additive refinement
 		ExitCode          *int      `json:"exit_code,omitempty"`
-		SubstateDetail    string    `json:"substate_detail,omitempty"` // free text for the substate (codex usage-limit retry time)
+		SubstateDetail    string    `json:"substate_detail,omitempty"` // free text for the substate (codex usage-limit retry time; usage-limit window, model-limit model, account-blocked reason)
 		TmuxSession       string    `json:"tmux_session,omitempty"`
 		Profile           string    `json:"profile"`
 		CreatedAt         time.Time `json:"created_at"`
@@ -3763,9 +3763,16 @@ func handleStatus(profile string, args []string) {
 					path = "~" + path[len(home):]
 				}
 				suffix := ""
-				if lbl := SubstateLabel(inst.Substate()); lbl != "" {
+				sub := inst.Substate()
+				if lbl := SubstateLabel(sub); lbl != "" {
 					if work := inst.BackgroundWork(); work.InFlight() {
 						lbl += ": " + work.Summary() // issue #2473
+					} else if isLimitSubstate(sub) {
+						// Name what the session is waiting on ("usage limit: weekly
+						// limit · resets 12pm"), not just that it waits.
+						if detail := inst.SubstateDetail(); detail != "" {
+							lbl += ": " + detail
+						}
 					}
 					suffix = "  [" + lbl + "]"
 					if exitCode := inst.ExitCode(); exitCode != nil {
