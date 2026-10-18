@@ -116,3 +116,23 @@ func TestLimitVerdictReset_ToolDataRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, at.Equal(ReadLimitVerdictResetFromToolData(row.ToolData)))
 }
+
+// A no-op `session set account|model` (same value) changes nothing, so it
+// must not drop an intent record either.
+func TestSetField_NoOpSwitchKeepsIntendedSwitch(t *testing.T) {
+	accountReviewConfig(t, "[profiles.work.claude]\nconfig_dir = '~/claude-work'\n")
+	inst := NewInstanceWithTool("noop-intent", t.TempDir(), "claude")
+	_, _, err := SetField(inst, FieldAccount, "work", nil)
+	require.NoError(t, err)
+	_, _, err = SetField(inst, FieldModel, "claude-opus-5-5", nil)
+	require.NoError(t, err)
+	inst.MarkIntendedSwitch("conductor move", DefaultIntendedSwitchTTL, time.Now())
+	rec := inst.IntendedSwitch
+
+	_, _, err = SetField(inst, FieldAccount, "work", nil)
+	require.NoError(t, err)
+	require.Equal(t, rec, inst.IntendedSwitch, "no-op account set cleared the intent")
+	_, _, err = SetField(inst, FieldModel, "claude-opus-5-5", nil)
+	require.NoError(t, err)
+	require.Equal(t, rec, inst.IntendedSwitch, "no-op model set cleared the intent")
+}

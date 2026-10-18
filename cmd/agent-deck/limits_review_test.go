@@ -170,3 +170,23 @@ func TestLimitsJSONAssignsSessionByGroupConfigDir(t *testing.T) {
 	require.False(t, byName["default"].Blocked, stdout)
 	require.Empty(t, byName["default"].Sessions, stdout)
 }
+
+// A session running Fable as the configured default (no per-session model
+// override) hits Fable's weekly cap just like one with the override.
+func TestAnnotateClaudeLimits_FableWeeklyOnDefaultModel(t *testing.T) {
+	got := annotateClaudeLimits([]limitAccountJSON{claudeAcc("work", false, 40)}, []limitSessionRow{
+		{ID: "f", Title: "tf", Account: "work", EffectiveModel: "claude-fable-5-1", Substate: "usage-limit", Detail: "weekly limit · resets 12pm (UTC)"},
+	})
+	require.Equal(t, []limitSessionJSON{{ID: "f", Title: "tf", Substate: "model-limit", Detail: "Fable weekly (account has room)",
+		Fix: "agent-deck session set f model claude-opus-5-5 --intended 'claude-fable-5-1 cap' && agent-deck session restart f"}}, got[0].Sessions)
+}
+
+// Model names and rejection text are untrusted: the printed fix must stay a
+// single shell-safe argument however they are spelled.
+func TestAnnotateClaudeLimits_FixCommandsAreShellQuoted(t *testing.T) {
+	got := annotateClaudeLimits([]limitAccountJSON{claudeAcc("work", false, 40)}, []limitSessionRow{
+		{ID: "m", Title: "tm", Account: "work", Substate: "model-limit", Detail: "Fable's cap; $(touch x)"},
+	})
+	require.Equal(t, `agent-deck session set m model claude-opus-5-5 --intended 'Fable'"'"'s cap; $(touch x) cap' && agent-deck session restart m`,
+		got[0].Sessions[0].Fix)
+}

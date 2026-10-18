@@ -462,12 +462,13 @@ func SetField(inst *Instance, field, value string, extraArgsTokens []string) (ol
 		// Restart required (see RestartPolicyFor) — the in-flight
 		// conversation is lost, that's the documented Option 1 tradeoff.
 		oldValue = inst.setAccountThreadSafe(candidate)
-		// A new switch is not covered by an earlier intent; the CLI re-marks
-		// it after SetField when --intended is given.
-		inst.IntendedSwitch = nil
-		// The resumed conversation still ends in the old account's rejection;
-		// it must not keep the session limited on the new one.
+		// A new switch is not covered by an earlier intent (the CLI re-marks
+		// it after SetField when --intended is given), and the resumed
+		// conversation still ends in the old account's rejection, which must
+		// not keep the session limited on the new one. A no-op set changes
+		// neither.
 		if oldValue != candidate {
+			inst.IntendedSwitch = nil
 			inst.resetLimitVerdict(time.Now())
 		}
 
@@ -531,10 +532,10 @@ func SetField(inst *Instance, field, value string, extraArgsTokens []string) (ol
 		} else if aerr := inst.ApplyLaunchModel(trimmed); aerr != nil {
 			return oldValue, nil, &MutationError{Field: field, Msg: aerr.Error()}
 		}
-		// Same as FieldAccount: an unmarked switch drops the old intent, and
-		// a real change resets the transcript limit verdict.
-		inst.IntendedSwitch = nil
+		// Same as FieldAccount: a real change drops the old intent and
+		// resets the transcript limit verdict; a no-op set does neither.
 		if inst.LaunchModelID() != oldValue {
+			inst.IntendedSwitch = nil
 			inst.resetLimitVerdict(time.Now())
 		}
 

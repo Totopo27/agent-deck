@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"al.essio.dev/pkg/shellescape"
+
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
@@ -24,6 +26,10 @@ type limitSessionJSON struct {
 // session's launch model override ("" means the tool default).
 type limitSessionRow struct {
 	ID, Title, Account, Model, Substate, Detail string
+	// EffectiveModel is the model the session actually launches with
+	// (override, conductor/group model, then [claude].default_model); ""
+	// when none is configured.
+	EffectiveModel string
 	// ConfigDir is the session's resolved Claude config dir (account,
 	// conductor, group, env, profile, global or default): what decides
 	// which slot's quota the session spends.
@@ -32,6 +38,10 @@ type limitSessionRow struct {
 
 // limitsBlockedReason is the blocked_reason when the session carries no detail.
 const limitsBlockedReason = "organization disabled Claude subscription access"
+
+// limitsOtherSlot is the placeholder fix commands name when no slot can take
+// the session; it is left unquoted so it reads as a blank to fill in.
+const limitsOtherSlot = "<other slot>"
 
 // limitsFallbackModel is the model the model-cap fix switches to.
 const limitsFallbackModel = "claude-opus-5-5"
@@ -162,7 +172,7 @@ func annotateClaudeLimits(accounts []limitAccountJSON, rows []limitSessionRow) [
 			}
 		}
 		if best == "" {
-			return "<other slot>"
+			return limitsOtherSlot
 		}
 		return best
 	}
@@ -179,6 +189,17 @@ func annotateClaudeLimits(accounts []limitAccountJSON, rows []limitSessionRow) [
 		if capModel == "" {
 			capModel = r.Detail
 		}
+		runModel := r.EffectiveModel
+		if runModel == "" {
+			runModel = r.Model
+		}
+		q := shellescape.Quote
+		qSlot := func(slot string) string {
+			if slot == limitsOtherSlot {
+				return slot
+			}
+			return q(slot)
+		}
 		modelFix := func(model, detail string) string {
 			if model == "" {
 				model = "model"
@@ -186,24 +207,24 @@ func annotateClaudeLimits(accounts []limitAccountJSON, rows []limitSessionRow) [
 			// Already on the fallback, or capped on Opus: a model switch
 			// would be a no-op, so wait out the cap or move account.
 			if r.Model == limitsFallbackModel || isOpusModel(capModel) {
-				return fmt.Sprintf("wait for reset (%s) or move account: agent-deck session set %s account %s --intended '%s cap' && agent-deck session restart %s", detail, r.ID, moveTarget(i), model, r.ID)
+				return fmt.Sprintf("wait for reset (%s) or move account: agent-deck session set %s account %s --intended %s && agent-deck session restart %s", detail, q(r.ID), qSlot(moveTarget(i)), q(model+" cap"), q(r.ID))
 			}
-			return fmt.Sprintf("agent-deck session set %s model %s --intended '%s cap' && agent-deck session restart %s", r.ID, limitsFallbackModel, model, r.ID)
+			return fmt.Sprintf("agent-deck session set %s model %s --intended %s && agent-deck session restart %s", q(r.ID), q(limitsFallbackModel), q(model+" cap"), q(r.ID))
 		}
 		switch r.Substate {
 		case string(session.SubstateAccountBlocked):
-			s.Fix = fmt.Sprintf("agent-deck session set %s account %s --intended '%s blocked' && agent-deck session restart %s", r.ID, moveTarget(i), acct, r.ID)
+			s.Fix = fmt.Sprintf("agent-deck session set %s account %s --intended %s && agent-deck session restart %s", q(r.ID), qSlot(moveTarget(i)), q(acct+" blocked"), q(r.ID))
 		case string(session.SubstateModelLimit):
 			s.Fix = modelFix(capModel, r.Detail)
 		case string(session.SubstateUsageLimit):
 			// Fable's own weekly cap, not the account's (bug 4): only when the
 			// 429 names the weekly window and no fresh account window (5h
 			// included) is at its limit.
-			if pct, ok := fresh7d(out[i]); ok && pct < 100 && isFableModel(r.Model) &&
+			if pct, ok := fresh7d(out[i]); ok && pct < 100 && isFableModel(runModel) &&
 				strings.HasPrefix(r.Detail, "weekly") && !accountLimitHit(out[i]) {
 				s.Substate = string(session.SubstateModelLimit)
 				s.Detail = "Fable weekly (account has room)"
-				s.Fix = modelFix(r.Model, s.Detail)
+				s.Fix = modelFix(runModel, s.Detail)
 			} else {
 				s.Fix = fmt.Sprintf("wait for reset (%s) or move account", r.Detail)
 			}
@@ -259,13 +280,14 @@ func liveClaudeSessionRows(profile string) []limitSessionRow {
 			continue
 		}
 		rows = append(rows, limitSessionRow{
-			ID:        inst.ID,
-			Title:     inst.GetTitleThreadSafe(),
-			Account:   inst.GetAccountThreadSafe(),
-			Model:     inst.LaunchModelID(),
-			Substate:  string(sub),
-			Detail:    detail,
-			ConfigDir: session.GetClaudeConfigDirForInstance(inst),
+			ID:             inst.ID,
+			Title:          inst.GetTitleThreadSafe(),
+			Account:        inst.GetAccountThreadSafe(),
+			Model:          inst.LaunchModelID(),
+			EffectiveModel: inst.EffectiveClaudeModel(),
+			Substate:       string(sub),
+			Detail:         detail,
+			ConfigDir:      session.GetClaudeConfigDirForInstance(inst),
 		})
 	}
 	return rows
