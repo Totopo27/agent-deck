@@ -76,20 +76,25 @@ func channelStateUsable(plugin, dir string) bool {
 }
 
 // configuredChannelStateDir returns the value the session's configuration
-// gives envVar, if any: restart overrides, meta.json env, [conductors.<name>]
-// and [groups.<group>] inline env, and the env_files those layers source
-// (best effort: a plain `[export ]VAR=value` line).
+// gives envVar, if any, in the prelude's precedence (later steps win):
+// restart overrides, meta.json env, meta.json env_file, [conductors.<name>]
+// and [groups.<group>] inline env, the tool env_file, [shell].env_files.
+// env_files are read best effort (a plain `[export ]VAR=value` line); values
+// produced by [shell].init_script (direnv) or a session wrapper cannot be
+// known here, and still override the pointer at runtime because it is
+// exported first.
 func (i *Instance) configuredChannelStateDir(config *UserConfig, name, envVar string) (string, bool) {
 	if v, ok := i.restartEnv[envVar]; ok {
 		return ExpandPath(v), true
 	}
-	var envFiles []string
 	if meta, err := LoadConductorMeta(name); err == nil {
 		if v, ok := meta.Env[envVar]; ok {
 			return ExpandPath(v), true
 		}
 		if meta.EnvFile != "" {
-			envFiles = append(envFiles, resolvePath(meta.EnvFile, i.ProjectPath))
+			if v, ok := envFileValue(resolvePath(meta.EnvFile, i.ProjectPath), envVar); ok {
+				return v, true
+			}
 		}
 	}
 	if config != nil {
@@ -101,11 +106,15 @@ func (i *Instance) configuredChannelStateDir(config *UserConfig, name, envVar st
 		}
 	}
 	if f := i.getToolEnvFile(); f != "" {
-		envFiles = append(envFiles, resolvePath(f, i.ProjectPath))
-	}
-	for _, f := range envFiles {
-		if v, ok := envFileValue(f, envVar); ok {
+		if v, ok := envFileValue(resolvePath(f, i.ProjectPath), envVar); ok {
 			return v, true
+		}
+	}
+	if config != nil {
+		for k := len(config.Shell.EnvFiles) - 1; k >= 0; k-- {
+			if v, ok := envFileValue(resolvePath(config.Shell.EnvFiles[k], i.ProjectPath), envVar); ok {
+				return v, true
+			}
 		}
 	}
 	return "", false
@@ -128,6 +137,16 @@ func envFileValue(path, key string) (string, bool) {
 	return "", false
 }
 
+// channelAnchorPresent reports whether the anchor entry exists at all, a
+// dangling link included.
+func channelAnchorPresent(anchor string) bool {
+	if anchor == "" {
+		return false
+	}
+	_, err := os.Lstat(anchor)
+	return err == nil
+}
+
 // conductorChannelAnchor is conductor/<name>/<plugin>.
 func conductorChannelAnchor(name, plugin string) string {
 	dir, err := ConductorNameDir(name)
@@ -139,7 +158,10 @@ func conductorChannelAnchor(name, plugin string) string {
 
 // conductorChannelStateEnv returns the prelude exports pointing a conductor's
 // channel plugins at conductor/<name>/<plugin>, for each plugin whose state
-// dir is not configured and whose anchor holds state. The conductor's own
+// dir is not configured and whose anchor exists. An anchor without state (a
+// link whose old-account target went away) is still exported: the plugin
+// then fails closed instead of falling back to the account's channels dir,
+// and ChannelStateWarnings names it. The conductor's own
 // state wins over the account's channels/<plugin>: that dir may hold another
 // session's bot. It runs before every configured source, so an env_file or
 // inline env that sets the variable still wins, while a value inherited from
@@ -160,7 +182,7 @@ func (i *Instance) conductorChannelStateEnv(config *UserConfig) string {
 			continue
 		}
 		anchor := conductorChannelAnchor(name, plugin)
-		if !channelStateUsable(plugin, anchor) {
+		if !channelAnchorPresent(anchor) {
 			continue
 		}
 		parts = append(parts, fmt.Sprintf("export %s='%s'", envVar, strings.ReplaceAll(anchor, "'", "'\\''")))
@@ -194,7 +216,7 @@ func (i *Instance) ChannelStateWarnings() []string {
 			if v, ok := i.configuredChannelStateDir(config, name, envVar); ok {
 				dir = v
 				hint = "fix " + envVar
-			} else if anchor := conductorChannelAnchor(name, plugin); channelStateAutoPoint[plugin] && channelStateUsable(plugin, anchor) {
+			} else if anchor := conductorChannelAnchor(name, plugin); channelStateAutoPoint[plugin] && channelAnchorPresent(anchor) {
 				dir = anchor
 			}
 		}

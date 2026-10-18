@@ -124,7 +124,11 @@ func TestSessionSetAccount_CarriesConductorChannelState(t *testing.T) {
 		t.Fatalf("session set account exited %d: %s %s", code, out, stderr)
 	}
 	anchor := filepath.Join(dir, "telegram")
-	if target, err := os.Readlink(anchor); err != nil || target != oldState {
+	wantTarget, err := filepath.EvalSymlinks(oldState)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target, err := os.Readlink(anchor); err != nil || target != wantTarget {
 		t.Fatalf("conductor/ops/telegram = %q, %v; want link -> %s (stderr: %s)", target, err, oldState, stderr)
 	}
 	if _, err := os.Lstat(filepath.Join(home, ".claude-beta", "channels", "telegram")); !os.IsNotExist(err) {

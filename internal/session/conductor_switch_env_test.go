@@ -175,7 +175,7 @@ func TestConductorSwitch_ChannelStateFollowsConductor(t *testing.T) {
 	if err != nil || fi.Mode()&os.ModeSymlink == 0 {
 		t.Fatalf("conductor/ops/telegram must be a link to the old state, lstat = %v, %v", fi, err)
 	}
-	if target, _ := os.Readlink(anchor); target != oldState {
+	if target, _ := os.Readlink(anchor); target != realPath(t, oldState) {
 		t.Errorf("link target = %q, want %q", target, oldState)
 	}
 	env := inst.buildEnvSourceCommand()
@@ -306,7 +306,7 @@ func TestConductorSwitch_ConductorStateWinsOverAccountState(t *testing.T) {
 	switchConductorTo(t, inst, "beta")
 	condDir, _ := ConductorNameDir("ops")
 	anchor := filepath.Join(condDir, "telegram")
-	if target, err := os.Readlink(anchor); err != nil || target != oldState {
+	if target, err := os.Readlink(anchor); err != nil || target != realPath(t, oldState) {
 		t.Fatalf("anchor = %q, %v; want link -> %s", target, err, oldState)
 	}
 	if env := inst.buildEnvSourceCommand(); !strings.Contains(env, "export TELEGRAM_STATE_DIR='"+anchor+"'") {
@@ -381,5 +381,28 @@ func TestConductorSwitch_DiscordIsReportedNotPointed(t *testing.T) {
 	}
 	if w := inst.ChannelStateWarnings(); len(w) != 1 || !strings.Contains(w[0], "DISCORD_STATE_DIR") {
 		t.Errorf("ChannelStateWarnings = %v, want one discord warning", w)
+	}
+}
+
+// The anchor links into the old account's dir. If that state later goes away
+// the link dangles; the conductor must still be pointed at its anchor (the
+// plugin then fails closed) and must not fall back to the new account's
+// channels/telegram, another session's bot. And it must warn.
+func TestConductorSwitch_DanglingAnchorFailsClosedAndWarns(t *testing.T) {
+	home, inst := setupSwitchConductor(t, "")
+	oldState := filepath.Join(home, ".claude-alpha", "channels", "telegram")
+	writeChannelState(t, oldState)
+	writeChannelState(t, filepath.Join(home, ".claude-beta", "channels", "telegram"))
+	switchConductorTo(t, inst, "beta")
+	if err := os.RemoveAll(oldState); err != nil {
+		t.Fatal(err)
+	}
+	condDir, _ := ConductorNameDir("ops")
+	anchor := filepath.Join(condDir, "telegram")
+	if env := inst.buildEnvSourceCommand(); !strings.Contains(env, "export TELEGRAM_STATE_DIR='"+anchor+"'") {
+		t.Errorf("dangling anchor: conductor falls back to the account's bot state; prelude = %q", env)
+	}
+	if w := inst.ChannelStateWarnings(); len(w) != 1 || !strings.Contains(w[0], anchor) {
+		t.Errorf("ChannelStateWarnings = %v, want one warning naming the dangling anchor %s", w, anchor)
 	}
 }
