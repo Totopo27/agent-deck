@@ -234,7 +234,12 @@ func handleRemoteAgent(profile string, args []string) {
 			return
 		}
 	}
-	dbPath, err := session.GetDBPathForProfile(profile)
+	resolvedProfile, err := session.ResolveProfileForStorage(profile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "remote-agent: %v\n", err)
+		exitCLI(1)
+	}
+	dbPath, err := session.GetDBPathForProfile(resolvedProfile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "remote-agent: %v\n", err)
 		exitCLI(1)
@@ -254,14 +259,14 @@ func handleRemoteAgent(profile string, args []string) {
 		fmt.Fprintln(os.Stderr, "remote-agent: a global state DB is registered; the probe would write last-activity rows")
 		exitCLI(1)
 	}
-	probe, closeProbe, err := newRemoteAgentProbe(profile)
+	probe, closeProbe, err := newRemoteAgentProbe(resolvedProfile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "remote-agent: %v\n", err)
 		exitCLI(1)
 	}
 	defer closeProbe()
 	runner := func(ctx context.Context, reqArgs []string) (string, string, int) {
-		full := append([]string{"-p", profile}, reqArgs...)
+		full := append([]string{"-p", resolvedProfile}, reqArgs...)
 		// The peer is the ssh-authenticated user who could run any of these
 		// verbs as `ssh host agent-deck ...` anyway; the verb is checked
 		// against the CLI's own registry and the deny list above, and the
@@ -284,7 +289,7 @@ func handleRemoteAgent(profile string, args []string) {
 		Probe:       probe,
 		WatchPath:   dbPath,
 		WatchEvery:  remoteAgentStampEvery,
-		Capture:     remoteAgentPaneCapturer(profile),
+		Capture:     remoteAgentPaneCapturer(resolvedProfile),
 		PaneEvery:   remoteAgentPaneEvery,
 		BinaryWatch: newRemoteAgentBinaryWatch(self),
 	})
