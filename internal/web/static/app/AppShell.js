@@ -86,6 +86,12 @@ function WorkHead() {
 
   return html`
     <div class="work-head">
+      <button class="mob-back-btn"
+              data-testid="work-head-back-btn"
+              title="Back to session list"
+              onClick=${() => { selectSession(null); activeTabSignal.value = 'fleet'; }}>
+        <${Icon} d=${ICONS.arrowLeft} size=${14}/>
+      </button>
       <div class="path">
         <span class=${`kind ${session.kind || ''}`}>${kindLabel}</span>
         ${profile && html`<span class="seg">${profile} /</span>`}

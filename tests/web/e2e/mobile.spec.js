@@ -157,4 +157,23 @@ test.describe('mobile phone layout', () => {
     expect(m.appBottom).toBeLessThanOrEqual(m.innerHeight)
     expect(m.barBottom).toBeLessThanOrEqual(m.innerHeight)
   })
+
+  test('back-to-list button in work-head returns to Fleet list on mobile (#2680)', async ({ page }) => {
+    // Open a session from Fleet
+    const tile = page.locator('[data-testid="fleet-session-tile"][data-session-id="sess-001"]')
+    await expect(tile).toBeVisible()
+    await tile.click()
+    await expect(page.locator('[data-testid="mobile-tab-terminal"]')).toHaveClass(/\bon\b/)
+    await expect(page.locator('.term-wrap')).toBeVisible()
+
+    // The back-to-list button should be visible in the work-head on phone
+    const backBtn = page.locator('[data-testid="work-head-back-btn"]')
+    await expect(backBtn).toBeVisible()
+
+    // Clicking it deselects the session and returns to Fleet
+    await backBtn.click()
+    await expect(page.locator('[data-testid="mobile-tab-fleet"]')).toHaveClass(/\bon\b/)
+    await expect(page.locator('[data-testid="fleet-pane"]')).toBeVisible()
+    await expect.poll(() => new URL(page.url()).pathname).toBe('/')
+  })
 })

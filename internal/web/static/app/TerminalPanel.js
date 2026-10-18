@@ -35,25 +35,35 @@ function wsURLForSession(sessionId, token) {
 // PERF-E: takes the shared AbortController so every listener registered here
 // is torn down by the single controller.abort() in the useEffect cleanup. No
 // local dispose() return value is needed.
-function installTouchScroll(container, xtermEl, controller) {
+function installTouchScroll(container, xtermEl, terminal, controller) {
   if (!container || !xtermEl) return
 
   let active = false
   let lastY = 0
+  let startX = 0
+  let startY = 0
+  let moved = false
 
   function onTouchStart(event) {
     if (!event.touches || event.touches.length !== 1) return
     active = true
-    lastY = event.touches[0].clientY
+    moved = false
+    startX = event.touches[0].clientX
+    startY = event.touches[0].clientY
+    lastY = startY
   }
 
   function onTouchMove(event) {
     if (!active || !event.touches || event.touches.length !== 1) return
-    event.preventDefault()
+    const x = event.touches[0].clientX
     const y = event.touches[0].clientY
     const delta = lastY - y
+    if (Math.abs(x - startX) > 6 || Math.abs(y - startY) > 6) {
+      moved = true
+    }
     lastY = y
     if (xtermEl && delta !== 0) {
+      event.preventDefault()
       xtermEl.dispatchEvent(
         new WheelEvent('wheel', {
           deltaY: delta,
@@ -65,7 +75,14 @@ function installTouchScroll(container, xtermEl, controller) {
     }
   }
 
-  function onTouchEnd() { active = false }
+  function onTouchEnd() {
+    // If touch did not move significantly, treat as tap to focus terminal
+    // (brings up on-screen keyboard on iOS/Android; issue #2680).
+    if (active && !moved && terminal && typeof terminal.focus === 'function') {
+      terminal.focus()
+    }
+    active = false
+  }
 
   container.addEventListener('touchstart', onTouchStart, { capture: true, passive: true, signal: controller.signal })
   container.addEventListener('touchmove', onTouchMove, { capture: true, passive: false, signal: controller.signal })
@@ -278,9 +295,9 @@ export function TerminalPanel() {
       signal: controller.signal,
     })
 
-    // Touch scrolling for mobile -- listeners attach via the shared
+    // Touch scrolling and tap-to-focus for mobile -- listeners attach via the shared
     // AbortController (PERF-E). No local dispose handle is needed.
-    installTouchScroll(container, terminal.element, controller)
+    installTouchScroll(container, terminal.element, terminal, controller)
 
     // Issue #2675: Cmd-click (Ctrl-click off macOS) opens the hovered link even
     // when the app captures the mouse (tmux `mouse on`, Claude Code), where a
