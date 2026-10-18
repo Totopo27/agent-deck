@@ -15,6 +15,7 @@ import (
 // Returns empty string if no env files or theme vars are configured.
 // Order of sourcing (later overrides earlier):
 //  1. Theme environment (COLORFGBG) for terminal-aware tools
+//     1b. Conductor channel state dir (<PLUGIN>_STATE_DIR) when unconfigured
 //  2. Global [shell].env_files (in order)
 //  3. [shell].init_script (for direnv, nvm, etc.)
 //  4. Tool-specific env_file ([claude].env_file, [gemini].env_file, [tools.X].env_file)
@@ -70,6 +71,15 @@ func (i *Instance) buildEnvSourceCommand() string {
 	}
 
 	ignoreMissing := config.Shell.GetIgnoreMissingEnvFiles()
+
+	// 1b. Conductor channel state (conductor_channel_state.go): point a
+	//     conductor's channel plugin at conductor/<name>/<plugin> when no
+	//     state-dir variable is configured, so the bot token follows the
+	//     conductor across accounts. First, so any configured source below
+	//     still overrides it, and an inherited value does not.
+	if channelEnv := i.conductorChannelStateEnv(config); channelEnv != "" {
+		sources = append(sources, channelEnv)
+	}
 
 	// 2. Global env_files from [shell] section
 	for _, envFile := range config.Shell.EnvFiles {

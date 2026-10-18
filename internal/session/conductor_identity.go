@@ -18,6 +18,8 @@ package session
 import (
 	"encoding/json"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"unicode"
@@ -87,7 +89,11 @@ func (i *Instance) storedConductorName() string {
 // non-conductor session. Order:
 //
 //  1. the stored ConductorName (stable across renames and decoration);
-//  2. the title fallback (ConductorNameFromTitle) for old records. When a
+//  2. for a session flagged IsConductor, the conductor dir it runs in
+//     (ConductorNameFromPath): setup creates the conductor in
+//     conductor/<name>, so the dir names it even when the title does not
+//     ("conductor-team-ops" for conductor "ops"). Adopted like 3;
+//  3. the title fallback (ConductorNameFromTitle) for old records. When a
 //     meta.json exists for the parsed name and the session is either flagged
 //     IsConductor or carries exactly the canonical "conductor-<name>" title
 //     (a legacy row written before the flag existed), the name is adopted as
@@ -126,6 +132,12 @@ func (i *Instance) resolveConductorName(title string) string {
 		i.warnConductorTitleDrift(name, title)
 		return name
 	}
+	if i.IsConductor {
+		if name := ConductorNameFromPath(i.ProjectPath); name != "" {
+			i.adoptConductorName(name)
+			return name
+		}
+	}
 	name := ConductorNameFromTitle(title)
 	if name == "" {
 		return ""
@@ -135,11 +147,48 @@ func (i *Instance) resolveConductorName(title string) string {
 	// carries a decorated conductor-shaped title, and the meta.json check
 	// against persisting a guess for a conductor that was never set up.
 	if (i.IsConductor || title == ConductorSessionTitle(name)) && IsConductorSetup(name) {
-		i.conductorNameMu.Lock()
-		if i.ConductorName == "" {
-			i.ConductorName = name
-		}
-		i.conductorNameMu.Unlock()
+		i.adoptConductorName(name)
+	}
+	return name
+}
+
+func (i *Instance) adoptConductorName(name string) {
+	i.conductorNameMu.Lock()
+	if i.ConductorName == "" {
+		i.ConductorName = name
+	}
+	i.conductorNameMu.Unlock()
+}
+
+// ConductorNameFromPath returns the conductor whose dir path is
+// (conductor/<name> with a meta.json), or "". The name is the one meta.json
+// records, so an alias dir (conductor/<alias> -> <name>) still names the real
+// conductor; it must lead back to path (os.SameFile, so symlinked bases
+// compare equal). Callers gate it on IsConductor: a worker launched inside
+// the conductor dir is not the conductor.
+func ConductorNameFromPath(path string) string {
+	if strings.TrimSpace(path) == "" {
+		return ""
+	}
+	name := filepath.Base(filepath.Clean(path))
+	meta, err := LoadConductorMeta(name)
+	if err != nil {
+		return ""
+	}
+	if meta.Name != "" {
+		name = meta.Name
+	}
+	dir, err := ConductorNameDir(name)
+	if err != nil {
+		return ""
+	}
+	want, err := os.Stat(dir)
+	if err != nil {
+		return ""
+	}
+	got, err := os.Stat(path)
+	if err != nil || !os.SameFile(want, got) || !IsConductorSetup(name) {
+		return ""
 	}
 	return name
 }
@@ -177,7 +226,8 @@ func (i *Instance) warnConductorTitleDrift(name, title string) {
 }
 
 // FindConductorInstance returns the session of the named conductor in
-// instances, or nil. A stored ConductorName wins; then the canonical title;
+// instances, or nil. A stored ConductorName wins; then a session flagged
+// IsConductor running in the conductor's dir; then the canonical title;
 // then a decorated title that parses to name on a session flagged
 // IsConductor (a worker that merely carries a decorated conductor-shaped
 // title must not be taken over by setup or removed by teardown). A session
@@ -188,6 +238,11 @@ func FindConductorInstance(instances []*Instance, name string) *Instance {
 	}
 	for _, inst := range instances {
 		if inst != nil && inst.storedConductorName() == name {
+			return inst
+		}
+	}
+	for _, inst := range instances {
+		if inst != nil && inst.IsConductor && inst.storedConductorName() == "" && ConductorNameFromPath(inst.ProjectPath) == name {
 			return inst
 		}
 	}
@@ -208,16 +263,33 @@ func FindConductorInstance(instances []*Instance, name string) *Instance {
 	return decorated
 }
 
+// ConductorSessionIDs returns the IDs of every session in instances that
+// resolves as the named conductor. More than one is a duplicate (an old row
+// plus one a setup re-run created): both would own the bot token, so a second
+// poller races the first. `conductor status` warns about it.
+func ConductorSessionIDs(instances []*Instance, name string) []string {
+	var ids []string
+	for _, inst := range instances {
+		if inst != nil && name != "" && inst.ResolveConductorNameThreadSafe() == name {
+			ids = append(ids, inst.ID)
+		}
+	}
+	return ids
+}
+
 // IsConductorNamed reports whether this session is the named conductor, judged
 // on title (which the caller reads under its own locking, e.g.
-// GetTitleThreadSafe). A stored name decides alone; otherwise the title must
-// parse to name.
+// GetTitleThreadSafe). A stored name decides alone; otherwise the conductor
+// dir of a flagged session, or the title, must name it.
 func (i *Instance) IsConductorNamed(name, title string) bool {
 	if i == nil || name == "" {
 		return false
 	}
 	if stored := i.storedConductorName(); stored != "" {
 		return stored == name
+	}
+	if i.IsConductor && ConductorNameFromPath(i.ProjectPath) == name {
+		return true
 	}
 	return ConductorNameFromTitle(title) == name
 }

@@ -481,6 +481,9 @@ func executeNativeClaudeSwitch(cfg *UserConfig, inst *Instance, preview *SwitchP
 	if trustErr := PreAcceptClaudeTrust(filepath.Join(targetDir, ".claude.json"), inst.EffectiveWorkingDir()); trustErr != nil {
 		j.Failure = "folder trust pre-seed: " + trustErr.Error()
 	}
+	// A conductor's channel plugin state (bot token) must follow it to the new
+	// account before the target starts; link or point only, never copy.
+	warnings = append(warnings, carryConductorChannelState(inst, sourceDir, targetDir)...)
 	oldAccount := inst.Account
 	storageAcknowledged, err := commitNativeSwitchAccount(journalPath, j, inst, preview.TargetAccount, wasRunning, opts.Storage)
 	if err != nil {

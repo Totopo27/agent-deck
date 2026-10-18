@@ -1104,6 +1104,12 @@ func handleConductorStatus(_ string, args []string) {
 		// stored conductor name.
 		SessionTitle  string `json:"session_title,omitempty"`
 		TitleMismatch bool   `json:"title_mismatch,omitempty"`
+		// ChannelWarnings names channel plugins with no state (no token),
+		// e.g. after an account switch.
+		ChannelWarnings []string `json:"channel_warnings,omitempty"`
+		// DuplicateSessionIDs lists every session resolving as this
+		// conductor when there is more than one (two bot owners).
+		DuplicateSessionIDs []string `json:"duplicate_session_ids,omitempty"`
 	}
 	var statuses []conductorStatus
 
@@ -1137,6 +1143,10 @@ func handleConductorStatus(_ string, args []string) {
 					cs.SessionDone = true
 					cs.SessionTitle = inst.Title
 					_, cs.TitleMismatch = inst.ConductorTitleDrift()
+					cs.ChannelWarnings = inst.ChannelStateWarnings()
+					if ids := session.ConductorSessionIDs(instances, meta.Name); len(ids) > 1 {
+						cs.DuplicateSessionIDs = ids
+					}
 					_ = inst.UpdateStatus()
 					cs.Running = inst.Status == session.StatusRunning || inst.Status == session.StatusWaiting || inst.Status == session.StatusIdle
 				}
@@ -1214,6 +1224,12 @@ func handleConductorStatus(_ string, args []string) {
 		fmt.Printf("  %s %s [%s] agent:%s heartbeat:%s  (%s)%s\n", statusIcon, cs.Name, cs.Profile, cs.Agent, hb, statusText, desc)
 		if cs.TitleMismatch {
 			fmt.Printf("    warning: session title %q no longer matches conductor %q (settings still resolve by the stored name)\n", cs.SessionTitle, cs.Name)
+		}
+		if len(cs.DuplicateSessionIDs) > 1 {
+			fmt.Printf("    ⚠ WARNING: %d sessions resolve as conductor %q (%s); run only one, or two pollers share the bot\n", len(cs.DuplicateSessionIDs), cs.Name, strings.Join(cs.DuplicateSessionIDs, ", "))
+		}
+		for _, w := range cs.ChannelWarnings {
+			fmt.Printf("    ⚠ WARNING: %s\n", w)
 		}
 	}
 	fmt.Println()

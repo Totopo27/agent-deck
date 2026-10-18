@@ -2175,9 +2175,19 @@ func handleSessionShow(profile string, args []string) {
 		}
 	}
 
+	// A conductor whose channel plugin has no state (typically right after an
+	// account switch) never starts its bot; say so loudly.
+	channelWarnings := inst.ChannelStateWarnings()
+	if len(channelWarnings) > 0 {
+		jsonData["channel_warnings"] = channelWarnings
+	}
+
 	// Build human-readable output
 	var sb strings.Builder
 
+	for _, w := range channelWarnings {
+		sb.WriteString(fmt.Sprintf("⚠  WARNING: %s\n", w))
+	}
 	sb.WriteString(fmt.Sprintf("Session: %s\n", inst.Title))
 	sb.WriteString(fmt.Sprintf("Profile: %s\n", profile))
 	sb.WriteString(fmt.Sprintf("ID:      %s\n", inst.ID))
@@ -2497,6 +2507,10 @@ func handleSessionSet(profile string, args []string) {
 			}
 		} else if migrated != "" && !quietMode && !*jsonOutput {
 			fmt.Printf("Conversation migrated to %s\n", migrated)
+		}
+		// A conductor's channel plugin state follows it (link or point only).
+		for _, note := range session.CarryConductorChannelState(inst, preAccountConfigDir, targetDir) {
+			fmt.Fprintf(os.Stderr, "Note: %s\n", note)
 		}
 	}
 
