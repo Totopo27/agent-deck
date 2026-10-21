@@ -35,7 +35,7 @@ function wsURLForSession(sessionId, token) {
 // PERF-E: takes the shared AbortController so every listener registered here
 // is torn down by the single controller.abort() in the useEffect cleanup. No
 // local dispose() return value is needed.
-function installTouchScroll(container, xtermEl, terminal, controller) {
+export function installTouchScroll(container, xtermEl, terminal, controller) {
   if (!container || !xtermEl) return
 
   let active = false
@@ -45,7 +45,10 @@ function installTouchScroll(container, xtermEl, terminal, controller) {
   let moved = false
 
   function onTouchStart(event) {
-    if (!event.touches || event.touches.length !== 1) return
+    if (!event.touches || event.touches.length !== 1) {
+      active = false
+      return
+    }
     active = true
     moved = false
     startX = event.touches[0].clientX
@@ -75,13 +78,18 @@ function installTouchScroll(container, xtermEl, terminal, controller) {
     }
   }
 
-  function onTouchEnd() {
+  function onTouchEnd(event) {
     // If touch did not move significantly, treat as tap to focus terminal
     // (brings up on-screen keyboard on iOS/Android; issue #2680).
-    if (active && !moved && terminal && typeof terminal.focus === 'function') {
+    // Only focus when all touches have ended (event.touches.length === 0)
+    // to prevent two-finger gestures (e.g. pinch) from focusing when lifting one finger.
+    const touchCount = event && event.touches ? event.touches.length : 0
+    if (active && !moved && touchCount === 0 && terminal && typeof terminal.focus === 'function') {
       terminal.focus()
     }
-    active = false
+    if (touchCount === 0) {
+      active = false
+    }
   }
 
   container.addEventListener('touchstart', onTouchStart, { capture: true, passive: true, signal: controller.signal })
