@@ -92,10 +92,15 @@ export function installTouchScroll(container, xtermEl, terminal, controller) {
     }
   }
 
+  function onTouchCancel() {
+    active = false
+    moved = false
+  }
+
   container.addEventListener('touchstart', onTouchStart, { capture: true, passive: true, signal: controller.signal })
   container.addEventListener('touchmove', onTouchMove, { capture: true, passive: false, signal: controller.signal })
   container.addEventListener('touchend', onTouchEnd, { capture: true, passive: true, signal: controller.signal })
-  container.addEventListener('touchcancel', onTouchEnd, { capture: true, passive: true, signal: controller.signal })
+  container.addEventListener('touchcancel', onTouchCancel, { capture: true, passive: true, signal: controller.signal })
 }
 
 export function TerminalPanel() {

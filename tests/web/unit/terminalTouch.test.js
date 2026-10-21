@@ -91,4 +91,24 @@ describe('installTouchScroll', () => {
 
     expect(terminal.focus).not.toHaveBeenCalled()
   })
+
+  it('resets state on touchcancel without focusing terminal', async () => {
+    const { installTouchScroll } = await import(modulePath)
+    const container = document.createElement('div')
+    const xtermEl = document.createElement('div')
+    const terminal = { focus: vi.fn() }
+    const controller = new AbortController()
+
+    installTouchScroll(container, xtermEl, terminal, controller)
+
+    // Touch started then cancelled by browser/system gesture
+    dispatchTouchEvent(container, 'touchstart', [createFakeTouch(100, 100)])
+    dispatchTouchEvent(container, 'touchcancel', [])
+
+    expect(terminal.focus).not.toHaveBeenCalled()
+
+    // Subsequent touchend without active touch does not focus
+    dispatchTouchEvent(container, 'touchend', [])
+    expect(terminal.focus).not.toHaveBeenCalled()
+  })
 })
